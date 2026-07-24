@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   bootstrapAccount,
+  forgotAccountPassword,
   loginAccount,
   logoutAccount,
   registerAccount,
+  resetAccountPassword,
   saveProfile,
+  verifyAccountEmail,
 } from "./transport";
 
 afterEach(() => {
@@ -72,7 +75,66 @@ describe("账户传输", () => {
         email: "member@example.com",
         password: "too-short",
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow("密码至少需要 12 个字符。");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("注册邮箱无效时显示中文提示，不暴露校验器 JSON", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      registerAccount({
+        email: "not-an-email",
+        password: "Correct-Horse-123",
+      }),
+    ).rejects.toThrow("请输入有效的邮箱地址。");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("登录短密码显示中文提示且不发送请求", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      loginAccount({
+        email: "member@example.com",
+        password: "short",
+      }),
+    ).rejects.toThrow("密码至少需要 12 个字符。");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("找回密码邮箱无效时显示中文提示", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      forgotAccountPassword({ email: "not-an-email" }),
+    ).rejects.toThrow("请输入有效的邮箱地址。");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("重置密码过短时显示中文提示", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      resetAccountPassword({
+        token: "valid-reset-token-with-enough-length",
+        newPassword: "short",
+      }),
+    ).rejects.toThrow("密码至少需要 12 个字符。");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("邮箱验证链接无效时显示中文提示", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(verifyAccountEmail({ token: "short" })).rejects.toThrow(
+      "验证链接无效或已过期。",
+    );
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

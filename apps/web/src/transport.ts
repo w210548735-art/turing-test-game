@@ -46,6 +46,60 @@ interface TransportCallbacks {
 
 const API_BASE = (import.meta.env.VITE_API_BASE ?? "").replace(/\/$/, "");
 
+interface InputValidationIssue {
+  readonly code: string;
+  readonly path: readonly PropertyKey[];
+}
+
+type InputValidationResult<T> =
+  | {
+      readonly success: true;
+      readonly data: T;
+    }
+  | {
+      readonly success: false;
+      readonly error: {
+        readonly issues: readonly InputValidationIssue[];
+      };
+    };
+
+function inputValidationMessage(
+  issues: readonly InputValidationIssue[],
+  invalidTokenMessage = "链接无效或已过期。",
+): string {
+  const issue = issues[0];
+  const field = String(issue?.path[0] ?? "");
+
+  if (field === "email") {
+    return "请输入有效的邮箱地址。";
+  }
+  if (field === "password" || field === "newPassword") {
+    if (issue?.code === "too_small") {
+      return "密码至少需要 12 个字符。";
+    }
+    if (issue?.code === "too_big") {
+      return "密码最多允许 128 个字符。";
+    }
+    return "密码格式不正确。";
+  }
+  if (field === "token") {
+    return invalidTokenMessage;
+  }
+  return "提交内容格式不正确，请检查后重试。";
+}
+
+function parseAccountInput<T>(
+  result: InputValidationResult<T>,
+  invalidTokenMessage?: string,
+): T {
+  if (result.success) {
+    return result.data;
+  }
+  throw new Error(
+    inputValidationMessage(result.error.issues, invalidTokenMessage),
+  );
+}
+
 async function parseError(response: Response): Promise<string> {
   try {
     const body = (await response.json()) as {
@@ -85,9 +139,12 @@ async function postJson(
 export async function registerAccount(
   input: RegisterAccountRequest,
 ): Promise<ReturnType<typeof registerAccountResponseSchema.parse>> {
+  const validatedInput = parseAccountInput(
+    registerAccountRequestSchema.safeParse(input),
+  );
   const response = await postJson(
     "/api/auth/register",
-    registerAccountRequestSchema.parse(input),
+    validatedInput,
   );
   if (!response.ok) {
     throw new Error(await parseError(response));
@@ -98,9 +155,13 @@ export async function registerAccount(
 export async function verifyAccountEmail(
   input: VerifyEmailRequest,
 ): Promise<ReturnType<typeof verifyEmailResponseSchema.parse>> {
+  const validatedInput = parseAccountInput(
+    verifyEmailRequestSchema.safeParse(input),
+    "验证链接无效或已过期。",
+  );
   const response = await postJson(
     "/api/auth/verify-email",
-    verifyEmailRequestSchema.parse(input),
+    validatedInput,
   );
   if (!response.ok) {
     throw new Error(await parseError(response));
@@ -111,9 +172,12 @@ export async function verifyAccountEmail(
 export async function loginAccount(
   input: LoginAccountRequest,
 ): Promise<AccountSessionResponse> {
+  const validatedInput = parseAccountInput(
+    loginAccountRequestSchema.safeParse(input),
+  );
   const response = await postJson(
     "/api/auth/login",
-    loginAccountRequestSchema.parse(input),
+    validatedInput,
   );
   if (!response.ok) {
     throw new Error(await parseError(response));
@@ -135,9 +199,12 @@ export async function bootstrapAccount(): Promise<AccountSessionResponse | null>
 export async function forgotAccountPassword(
   input: ForgotPasswordRequest,
 ): Promise<ReturnType<typeof forgotPasswordResponseSchema.parse>> {
+  const validatedInput = parseAccountInput(
+    forgotPasswordRequestSchema.safeParse(input),
+  );
   const response = await postJson(
     "/api/auth/password/forgot",
-    forgotPasswordRequestSchema.parse(input),
+    validatedInput,
   );
   if (!response.ok) {
     throw new Error(await parseError(response));
@@ -148,9 +215,13 @@ export async function forgotAccountPassword(
 export async function resetAccountPassword(
   input: ResetPasswordRequest,
 ): Promise<ReturnType<typeof resetPasswordResponseSchema.parse>> {
+  const validatedInput = parseAccountInput(
+    resetPasswordRequestSchema.safeParse(input),
+    "重置密码链接无效或已过期。",
+  );
   const response = await postJson(
     "/api/auth/password/reset",
-    resetPasswordRequestSchema.parse(input),
+    validatedInput,
   );
   if (!response.ok) {
     throw new Error(await parseError(response));
