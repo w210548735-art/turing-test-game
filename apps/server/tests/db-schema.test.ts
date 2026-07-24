@@ -7,6 +7,11 @@ import {
   bans,
   deviceAccounts,
   devices,
+  feedback,
+  feedbackCategoryEnum,
+  feedbackDigestRuns,
+  feedbackDigestStatusEnum,
+  feedbackDeliveryStatusEnum,
   gameParticipants,
   games,
   guesses,
@@ -37,10 +42,12 @@ const allTables = [
   reports,
   moderationEvents,
   bans,
+  feedback,
+  feedbackDigestRuns,
 ];
 
 describe("数据库结构", () => {
-  it("包含封闭 Alpha 与账户安全所需的十四张表", () => {
+  it("包含封闭 Alpha、账户安全与反馈闭环所需的数据表", () => {
     assert.deepEqual(
       allTables.map((table) => getTableName(table)),
       [
@@ -58,8 +65,74 @@ describe("数据库结构", () => {
         "reports",
         "moderation_events",
         "bans",
+        "feedback",
+        "feedback_digest_runs",
       ],
     );
+  });
+
+  it("反馈表使用受限分类、投递状态与长度约束迁移", async () => {
+    assert.deepEqual(feedbackCategoryEnum.enumValues, [
+      "bug",
+      "suggestion",
+      "other",
+    ]);
+    assert.deepEqual(feedbackDeliveryStatusEnum.enumValues, [
+      "pending",
+      "sent",
+      "failed",
+    ]);
+    assert.deepEqual(feedbackDigestStatusEnum.enumValues, [
+      "pending",
+      "sending",
+      "sent",
+      "failed",
+    ]);
+    const columns = getTableColumns(feedback);
+    assert.equal(columns.userId.name, "user_id");
+    assert.equal(columns.deliveryStatus.name, "delivery_status");
+    assert.equal(columns.deliveredAt.name, "delivered_at");
+
+    const migrationUrl = new URL(
+      "../drizzle/0003_feedback.sql",
+      import.meta.url,
+    );
+    const migration = await readFile(migrationUrl, "utf8");
+    assert.match(migration, /CREATE TABLE "feedback"/);
+    assert.match(migration, /feedback_title_length/);
+    assert.match(migration, /feedback_details_length/);
+    assert.match(migration, /ON DELETE set null/);
+    assert.doesNotMatch(migration, /DROP (?:TABLE|COLUMN|TYPE|INDEX)/i);
+
+    const digestMigrationUrl = new URL(
+      "../drizzle/0004_feedback_digest.sql",
+      import.meta.url,
+    );
+    const digestMigration = await readFile(digestMigrationUrl, "utf8");
+    assert.match(
+      digestMigration,
+      /CREATE TABLE "feedback_digest_runs"/,
+    );
+    assert.match(
+      digestMigration,
+      /feedback_digest_runs_lease_consistent/,
+    );
+    assert.match(
+      digestMigration,
+      /feedback_digest_runs_message_id_uidx/,
+    );
+    assert.match(digestMigration, /ADD COLUMN "digest_run_id"/);
+    assert.doesNotMatch(
+      digestMigration,
+      /DROP (?:TABLE|COLUMN|TYPE|INDEX)/i,
+    );
+
+    const journalUrl = new URL(
+      "../drizzle/meta/_journal.json",
+      import.meta.url,
+    );
+    const journal = await readFile(journalUrl, "utf8");
+    assert.match(journal, /"tag": "0004_feedback_digest"/);
   });
 
   it("账户字段兼容游客数据并使用规范化邮箱唯一索引", () => {

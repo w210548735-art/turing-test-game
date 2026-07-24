@@ -3,6 +3,10 @@ import { resolve } from "node:path";
 import nodemailer, { type SendMailOptions } from "nodemailer";
 import type { EmailDelivery, EmailMessage } from "./auth-service.js";
 import { canonicalizeEmail } from "./email.js";
+import type {
+  FeedbackDigestEmailMessage,
+  FeedbackEmailDelivery,
+} from "../feedback/types.js";
 
 const QQ_SMTP_HOST = "smtp.qq.com";
 const QQ_SMTP_PORT = 465;
@@ -145,6 +149,61 @@ function escapeHtml(value: string): string {
   );
 }
 
+function feedbackCategoryLabel(
+  category: FeedbackDigestEmailMessage["digest"]["feedback"][number]["category"],
+): string {
+  return {
+    bug: "问题 / Bug",
+    suggestion: "功能建议",
+    other: "其他反馈",
+  }[category];
+}
+
+function digestDate(message: FeedbackDigestEmailMessage): string {
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(message.digest.cutoffAt);
+}
+
+function feedbackDigestText(message: FeedbackDigestEmailMessage): string {
+  const header = [
+    `图灵测试每日反馈汇总（${digestDate(message)} 北京时间 10:00）`,
+    `批次编号：${message.digest.id}`,
+    `反馈数量：${message.digest.feedback.length}`,
+    "",
+  ];
+  const rows = message.digest.feedback.flatMap((feedback, index) => [
+    `${index + 1}. [${feedbackCategoryLabel(feedback.category)}] ${feedback.title}`,
+    `反馈编号：${feedback.id}`,
+    `账户 ID：${feedback.userId ?? "账户已删除"}`,
+    `提交时间：${feedback.createdAt.toISOString()}`,
+    feedback.details,
+    "",
+  ]);
+  return [...header, ...rows].join("\n");
+}
+
+function feedbackDigestHtml(message: FeedbackDigestEmailMessage): string {
+  const cell = (value: string) =>
+    `<td style="vertical-align:top;padding:8px;border:1px solid #222;word-break:break-word">${escapeHtml(value).replace(/\r?\n/gu, "<br>")}</td>`;
+  const rows = message.digest.feedback.map(
+    (feedback, index) =>
+      `<tr>${cell(String(index + 1))}${cell(feedback.id)}${cell(feedbackCategoryLabel(feedback.category))}${cell(feedback.userId ?? "账户已删除")}${cell(feedback.createdAt.toISOString())}${cell(feedback.title)}${cell(feedback.details)}</tr>`,
+  );
+  return [
+    `<h1>图灵测试每日反馈汇总</h1>`,
+    `<p>截止时间：${escapeHtml(digestDate(message))} 北京时间 10:00</p>`,
+    `<p>批次编号：${escapeHtml(message.digest.id)}；反馈数量：${message.digest.feedback.length}</p>`,
+    '<table style="border-collapse:collapse;width:100%">',
+    '<thead><tr style="background:#fff4d6"><th style="padding:8px;border:1px solid #222">#</th><th style="padding:8px;border:1px solid #222">反馈编号</th><th style="padding:8px;border:1px solid #222">分类</th><th style="padding:8px;border:1px solid #222">账户 ID</th><th style="padding:8px;border:1px solid #222">提交时间</th><th style="padding:8px;border:1px solid #222">标题</th><th style="padding:8px;border:1px solid #222">详细内容</th></tr></thead>',
+    `<tbody>${rows.join("")}</tbody>`,
+    "</table>",
+  ].join("");
+}
+
 function buildActionUrl(config: QqSmtpConfig, message: EmailMessage): string {
   const path =
     message.purpose === "EMAIL_VERIFICATION"
@@ -188,7 +247,9 @@ function buildMail(
   };
 }
 
-export class QqSmtpEmailDelivery implements EmailDelivery {
+export class QqSmtpEmailDelivery
+  implements EmailDelivery, FeedbackEmailDelivery
+{
   readonly #transport: SmtpTransport;
 
   constructor(
@@ -227,5 +288,19 @@ export class QqSmtpEmailDelivery implements EmailDelivery {
 
   async send(message: EmailMessage): Promise<void> {
     await this.#transport.sendMail(buildMail(this.config, message));
+  }
+
+  async sendFeedbackDigest(
+    message: FeedbackDigestEmailMessage,
+  ): Promise<void> {
+    const target = canonicalizeEmail(message.to);
+    await this.#transport.sendMail({
+      from: { name: this.config.fromName, address: this.config.user },
+      to: target,
+      messageId: message.digest.messageId,
+      subject: `【图灵测试】每日反馈汇总 · ${digestDate(message)}`,
+      text: feedbackDigestText(message),
+      html: feedbackDigestHtml(message),
+    });
   }
 }

@@ -16,6 +16,8 @@ import {
   resetPasswordRequestSchema,
   resetPasswordResponseSchema,
   serverEventSchema,
+  submitFeedbackRequestSchema,
+  submitFeedbackResponseSchema,
   verifyEmailRequestSchema,
   verifyEmailResponseSchema,
 } from "./schemas.js";
@@ -215,5 +217,36 @@ describe("共享协议", () => {
     expect(logoutResponseSchema.safeParse({ loggedOut: true }).success).toBe(
       true,
     );
+  });
+
+  it("严格校验问题与意见反馈契约", () => {
+    expect(
+      submitFeedbackRequestSchema.safeParse({
+        category: "bug",
+        title: "移动端按钮被遮挡",
+        details: "在小屏幕设备横屏时，提交判断按钮无法完整显示。",
+      }).success,
+    ).toBe(true);
+    expect(
+      submitFeedbackRequestSchema.safeParse({
+        category: "feature",
+        title: "错误分类",
+        details: "分类必须来自协议允许的固定集合。",
+      }).success,
+    ).toBe(false);
+    expect(
+      submitFeedbackRequestSchema.safeParse({
+        category: "other",
+        title: "x",
+        details: "x".repeat(2_001),
+      }).success,
+    ).toBe(false);
+    expect(
+      submitFeedbackResponseSchema.safeParse({
+        accepted: true,
+        feedbackId: "7febf16e-48ef-4ef4-8422-edb227b6b7fe",
+        message: "感谢你的反馈喵～",
+      }).success,
+    ).toBe(true);
   });
 });

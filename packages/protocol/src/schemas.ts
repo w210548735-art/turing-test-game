@@ -99,6 +99,28 @@ export const logoutResponseSchema = z
   })
   .strict();
 
+export const feedbackCategorySchema = z.enum([
+  "bug",
+  "suggestion",
+  "other",
+]);
+
+export const submitFeedbackRequestSchema = z
+  .object({
+    category: feedbackCategorySchema,
+    title: z.string().trim().min(2).max(80),
+    details: z.string().trim().min(10).max(2_000),
+  })
+  .strict();
+
+export const submitFeedbackResponseSchema = z
+  .object({
+    accepted: z.literal(true),
+    feedbackId: z.string().uuid(),
+    message: z.string().min(1).max(200),
+  })
+  .strict();
+
 export const profileInputSchema = z.object({
   nickname: z.string().min(2).max(18),
   typingStatus: z.string().min(1).max(30),
@@ -269,6 +291,13 @@ export type ResetPasswordResponse = z.infer<
 >;
 export type LogoutRequest = z.infer<typeof logoutRequestSchema>;
 export type LogoutResponse = z.infer<typeof logoutResponseSchema>;
+export type FeedbackCategory = z.infer<typeof feedbackCategorySchema>;
+export type SubmitFeedbackRequest = z.infer<
+  typeof submitFeedbackRequestSchema
+>;
+export type SubmitFeedbackResponse = z.infer<
+  typeof submitFeedbackResponseSchema
+>;
 export type ProfileInput = z.infer<typeof profileInputSchema>;
 export type SessionResponse = z.infer<typeof sessionResponseSchema>;
 export type ChatMessage = z.infer<typeof chatMessageSchema>;

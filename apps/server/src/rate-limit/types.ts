@@ -21,6 +21,7 @@ export type RateLimitOperation =
   | "chat.send"
   | "chat.typing"
   | "game.report"
+  | "feedback.submit"
   | "ai.request"
   | "ws.handshake";
 

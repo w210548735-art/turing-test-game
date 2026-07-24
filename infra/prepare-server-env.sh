@@ -9,6 +9,7 @@ SITE_ADDRESS="${SITE_ADDRESS:-}"
 ACME_EMAIL="${ACME_EMAIL:-}"
 QQ_SMTP_USER="${QQ_SMTP_USER:-}"
 QQ_SMTP_FROM_NAME="${QQ_SMTP_FROM_NAME:-图灵测试}"
+FEEDBACK_RECIPIENT_EMAIL="${FEEDBACK_RECIPIENT_EMAIL:-admin@example.com}"
 ENV_FILE="${APP_ROOT}/shared/env/infra.env"
 SECRETS_DIR="${APP_ROOT}/shared/secrets"
 SECRET_GROUP="${SECRET_GROUP:-docker}"
@@ -25,6 +26,11 @@ fi
 
 if [[ ! "${QQ_SMTP_USER}" =~ ^[^[:space:]@]+@(qq\.com|foxmail\.com)$ ]]; then
   echo "QQ_SMTP_USER 必须是 QQ 或 Foxmail 邮箱地址。" >&2
+  exit 1
+fi
+
+if [[ ! "${FEEDBACK_RECIPIENT_EMAIL}" =~ ^[^[:space:]@]+@[^[:space:]@]+$ ]]; then
+  echo "FEEDBACK_RECIPIENT_EMAIL 必须是有效收件邮箱。" >&2
   exit 1
 fi
 
@@ -67,6 +73,7 @@ DEEPSEEK_API_KEY_SECRET_FILE=${SECRETS_DIR}/deepseek_api_key.txt
 QQ_SMTP_USER=${QQ_SMTP_USER}
 QQ_SMTP_FROM_NAME=${QQ_SMTP_FROM_NAME}
 QQ_SMTP_AUTH_CODE_SECRET_FILE=${SECRETS_DIR}/qq_smtp_auth_code.txt
+FEEDBACK_RECIPIENT_EMAIL=${FEEDBACK_RECIPIENT_EMAIL}
 SECRET_GID=${secret_gid}
 
 REGISTRATION_OPEN=true

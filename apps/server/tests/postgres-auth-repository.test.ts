@@ -52,7 +52,7 @@ describe("PostgresAuthRepository PostgreSQL 语义", () => {
     await client.close();
   });
 
-  it("运行 0000/0001/0002 后账户行无需伪造游客 Token，且并发邮箱唯一冲突被映射", async () => {
+  it("运行 0000–0004 后账户行无需伪造游客 Token，且并发邮箱唯一冲突被映射", async () => {
     const first = await repository.createUser(
       accountInput("first@example.com"),
     );

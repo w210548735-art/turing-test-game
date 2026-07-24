@@ -123,6 +123,16 @@ export const DEFAULT_RATE_LIMIT_POLICIES: RateLimitPolicies = {
       { id: "global-1d", dimension: "global", limit: 2_000, windowMs: DAY },
     ],
   },
+  "feedback.submit": {
+    operation: "feedback.submit",
+    rules: [
+      { id: "user-1d", dimension: "user", limit: 5, windowMs: DAY, required: true },
+      { id: "device-1d", dimension: "device", limit: 5, windowMs: DAY, required: true },
+      { id: "session-1d", dimension: "session", limit: 5, windowMs: DAY, required: true },
+      { id: "ip-1d", dimension: "ip", limit: 20, windowMs: DAY, required: true },
+      { id: "global-1d", dimension: "global", limit: 1_000, windowMs: DAY },
+    ],
+  },
   "ai.request": {
     operation: "ai.request",
     rules: [

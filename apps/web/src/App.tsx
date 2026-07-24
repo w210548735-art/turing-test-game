@@ -18,6 +18,15 @@ import {
   type GuessTarget,
 } from "./game-machine";
 import {
+  hitRate,
+  localRecordKey,
+  readLocalRecord,
+  recordFinishedGame,
+  type LocalPlayerRecord,
+  writeLocalRecord,
+} from "./local-record";
+import { pickOpeningQuestions } from "./opening-questions";
+import {
   bootstrapAccount,
   DemoTransport,
   forgotAccountPassword,
@@ -29,7 +38,9 @@ import {
   registerAccount,
   resetAccountPassword,
   saveProfile,
+  submitAccountFeedback,
   type ServerEvent,
+  type FeedbackCategory,
   verifyAccountEmail,
 } from "./transport";
 
@@ -39,18 +50,16 @@ const THINKING_SUGGESTIONS = [
   "正在努力像个人类…",
 ];
 
-const OPENING_QUESTIONS = [
-  "你最近一次改变看法，是因为什么？",
-  "如果只能保留一种感官，你会选什么？",
-  "描述一件你明知没必要却仍会做的事。",
-];
-
 const MATCH_SEARCH_MESSAGES = [
   "正在为你寻找一位旗鼓相当的对手",
   "正在扫描此刻在线的匿名玩家",
   "好的对话，值得多等一会儿",
   "正在把两位观察者带到同一扇门前",
 ];
+
+const BILIBILI_SPACE_URL =
+  "https://space.bilibili.com/485008770?spm_id_from=333.1007.0.0";
+const DOUYIN_SPACE_URL = "https://v.douyin.com/l_xBqIYez08/";
 
 type AuthMode = "login" | "register" | "forgot" | "reset" | "verify";
 
@@ -138,8 +147,23 @@ export default function App() {
   const [confidence, setConfidence] = useState(68);
   const [reportOpen, setReportOpen] = useState(false);
   const [leaveOpen, setLeaveOpen] = useState(false);
+  const [recordOpen, setRecordOpen] = useState(false);
+  const [creatorOpen, setCreatorOpen] = useState(false);
+  const [supportOpen, setSupportOpen] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackBusy, setFeedbackBusy] = useState(false);
+  const [feedbackError, setFeedbackError] = useState<string | null>(null);
+  const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
+  const openingQuestions = useMemo(
+    () => pickOpeningQuestions(3),
+    [state.gameId],
+  );
   const [isStarting, setIsStarting] = useState(false);
   const [pendingGuess, setPendingGuess] = useState<GuessTarget | null>(null);
+  const recordKey = localRecordKey(accountSession?.user.id);
+  const [localRecord, setLocalRecord] = useState<LocalPlayerRecord>(() =>
+    readLocalRecord(localRecordKey()),
+  );
 
   const transportRef = useRef<GameTransport | null>(null);
   const stateRef = useRef(state);
@@ -219,6 +243,25 @@ export default function App() {
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
+
+  useEffect(() => {
+    setLocalRecord(readLocalRecord(recordKey));
+  }, [recordKey]);
+
+  useEffect(() => {
+    if (
+      state.screen !== "finished" ||
+      !state.gameId ||
+      !state.result
+    ) {
+      return;
+    }
+    setLocalRecord((current) => {
+      const next = recordFinishedGame(current, state.gameId!, state.result!);
+      if (next !== current) writeLocalRecord(recordKey, next);
+      return next;
+    });
+  }, [recordKey, state.gameId, state.result, state.screen]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 250);
@@ -524,6 +567,32 @@ export default function App() {
     }
   }, [accountSession]);
 
+  async function handleFeedbackSubmit(input: {
+    category: FeedbackCategory;
+    title: string;
+    details: string;
+  }): Promise<void> {
+    if (!accountSession) {
+      setFeedbackError("登录账户后才能把反馈安全送到作者邮箱喵。");
+      return;
+    }
+    setFeedbackBusy(true);
+    setFeedbackError(null);
+    try {
+      const result = await submitAccountFeedback(
+        accountSession.csrfToken,
+        input,
+      );
+      setFeedbackMessage(result.message);
+    } catch (error) {
+      setFeedbackError(
+        error instanceof Error ? error.message : "反馈发送失败，请稍后重试。",
+      );
+    } finally {
+      setFeedbackBusy(false);
+    }
+  }
+
   const startGame = useCallback(
     async (
       profileNickname: string,
@@ -765,6 +834,18 @@ export default function App() {
           EXP. / 001
         </div>
         <div className="header-actions">
+          {!showAccountAccess &&
+            (state.screen === "onboarding" || state.screen === "finished") && (
+            <button
+              className="header-record"
+              type="button"
+              onClick={() => setRecordOpen(true)}
+            >
+              <span>账户数据</span>
+              <strong>{String(localRecord.rounds).padStart(2, "0")} 局</strong>
+              <strong>{hitRate(localRecord)}%</strong>
+            </button>
+          )}
           {accountSession && (
             <button
               className="header-logout"
@@ -838,7 +919,22 @@ export default function App() {
           />
         )}
 
-        {!showAccountAccess && state.screen === "onboarding" && (
+        {!showAccountAccess && recordOpen && (
+          <AccountRecordPage
+            record={localRecord}
+            accountEmail={accountSession?.user.email}
+            onBack={() => setRecordOpen(false)}
+            onCreator={() => setCreatorOpen(true)}
+            onSupport={() => setSupportOpen(true)}
+            onFeedback={() => {
+              setFeedbackError(null);
+              setFeedbackMessage(null);
+              setFeedbackOpen(true);
+            }}
+          />
+        )}
+
+        {!showAccountAccess && !recordOpen && state.screen === "onboarding" && (
           <Onboarding
             nickname={nickname}
             thinkingStatus={thinkingStatus}
@@ -852,7 +948,7 @@ export default function App() {
           />
         )}
 
-        {!showAccountAccess && state.screen === "matching" && (
+        {!showAccountAccess && !recordOpen && state.screen === "matching" && (
           <SearchMatching
             nickname={state.nickname}
             elapsed={searchElapsed}
@@ -864,7 +960,7 @@ export default function App() {
           />
         )}
 
-        {!showAccountAccess && state.screen === "queue" && (
+        {!showAccountAccess && !recordOpen && state.screen === "queue" && (
           <CapacityQueue
             nickname={state.nickname}
             position={state.queuePosition ?? 1}
@@ -875,7 +971,7 @@ export default function App() {
           />
         )}
 
-        {!showAccountAccess && state.screen === "admission" && (
+        {!showAccountAccess && !recordOpen && state.screen === "admission" && (
           <AdmissionGate
             nickname={state.nickname}
             progress={matchProgress}
@@ -887,10 +983,11 @@ export default function App() {
           />
         )}
 
-        {!showAccountAccess && state.screen === "chat" && (
+        {!showAccountAccess && !recordOpen && state.screen === "chat" && (
           <ChatRoom
             nickname={state.nickname}
             opponentLabel={state.opponentLabel}
+            openingQuestions={openingQuestions}
             thinkingStatus={state.thinkingStatus}
             messages={state.messages}
             opponentTyping={state.opponentTyping}
@@ -912,7 +1009,10 @@ export default function App() {
           />
         )}
 
-        {!showAccountAccess && state.screen === "finished" && state.result && (
+        {!showAccountAccess &&
+          !recordOpen &&
+          state.screen === "finished" &&
+          state.result && (
           <ResultScreen
             result={state.result}
             nickname={state.nickname}
@@ -946,6 +1046,29 @@ export default function App() {
         <ConfirmDialog
           onCancel={() => setLeaveOpen(false)}
           onConfirm={leaveGame}
+        />
+      )}
+
+      {supportOpen && (
+        <SupportDialog onClose={() => setSupportOpen(false)} />
+      )}
+
+      {creatorOpen && (
+        <CreatorDialog onClose={() => setCreatorOpen(false)} />
+      )}
+
+      {feedbackOpen && (
+        <FeedbackDialog
+          canSubmit={Boolean(accountSession)}
+          busy={feedbackBusy}
+          error={feedbackError}
+          message={feedbackMessage}
+          onClose={() => {
+            setFeedbackOpen(false);
+            setFeedbackError(null);
+            setFeedbackMessage(null);
+          }}
+          onSubmit={handleFeedbackSubmit}
         />
       )}
     </div>
@@ -1570,6 +1693,7 @@ function AdmissionGate({
 interface ChatRoomProps {
   nickname: string;
   opponentLabel: string;
+  openingQuestions: string[];
   thinkingStatus: string;
   messages: ChatMessage[];
   opponentTyping: boolean;
@@ -1593,6 +1717,7 @@ interface ChatRoomProps {
 function ChatRoom({
   nickname,
   opponentLabel,
+  openingQuestions,
   thinkingStatus,
   messages,
   opponentTyping,
@@ -1699,7 +1824,7 @@ function ChatRoom({
               <h2>别从“你好”开始。</h2>
               <p>选择一个不容易被模板回答的问题，观察对方如何犹豫。</p>
               <div className="opening-questions" aria-label="开场问题建议">
-                {OPENING_QUESTIONS.map((question, index) => (
+                {openingQuestions.map((question, index) => (
                   <button
                     key={question}
                     type="button"
@@ -1973,6 +2098,396 @@ function ConfirmDialog({
             继续对话
           </button>
         </div>
+      </dialog>
+    </div>
+  );
+}
+
+function AccountRecordPage({
+  record,
+  accountEmail,
+  onBack,
+  onCreator,
+  onSupport,
+  onFeedback,
+}: {
+  record: LocalPlayerRecord;
+  accountEmail?: string;
+  onBack: () => void;
+  onCreator: () => void;
+  onSupport: () => void;
+  onFeedback: () => void;
+}) {
+  return (
+    <section className="record-page">
+      <div className="record-page-heading">
+        <button className="record-back" type="button" onClick={onBack}>
+          ← 返回实验
+        </button>
+        <div>
+          <p>PLAYER FILE / LOCAL RECORD</p>
+          <h1>对局记录</h1>
+          <span>{accountEmail || "本地演示身份"}</span>
+        </div>
+        <p>
+          每次判断都会留下一个观察切片。当前记录仅保存在这台设备，
+          不会跨浏览器同步。
+        </p>
+      </div>
+
+      <div className="record-overview">
+        <dl className="record-stats">
+          <div>
+            <dt>LOCAL RECORD / 完成局数</dt>
+            <dd>{String(record.rounds).padStart(2, "0")}</dd>
+          </div>
+          <div>
+            <dt>HIT RATE / 判断命中</dt>
+            <dd>{hitRate(record)}%</dd>
+          </div>
+          <div>
+            <dt>TOTAL SCORE / 累计得分</dt>
+            <dd>{record.totalScore}</dd>
+          </div>
+        </dl>
+        <div className="creator-actions">
+          <button
+            className="primary-action"
+            type="button"
+            onClick={onCreator}
+          >
+            去围观作者吧 ( •̀ ω •́ )✧
+            <span aria-hidden="true">↗</span>
+          </button>
+          <button className="support-action" type="button" onClick={onSupport}>
+            请作者喝杯奶茶叭 ☕
+          </button>
+          <button className="feedback-action" type="button" onClick={onFeedback}>
+            发现 Bug？来投喂反馈喵
+          </button>
+        </div>
+      </div>
+
+      <div className="record-history">
+        <div className="record-history-title">
+          <div>
+            <span>MATCH ARCHIVE</span>
+            <h2>历史战绩</h2>
+          </div>
+          <strong>{record.games.length} 条本机记录</strong>
+        </div>
+        {record.games.length === 0 ? (
+          <div className="record-empty">
+            <span>NO SIGNAL YET / 000</span>
+            <strong>还没有对局记录</strong>
+            <p>
+              完成第一次判断后，这里就会留下观察记录啦 ฅ( ̳• ·̫ • ̳ฅ)
+            </p>
+            <button className="text-action" type="button" onClick={onBack}>
+              先去完成第一局叭 →
+            </button>
+          </div>
+        ) : (
+          <ol className="record-game-list">
+            {record.games.map((game, index) => (
+              <li
+                key={game.id}
+                className={game.isCorrect ? "is-correct" : "is-wrong"}
+              >
+                <div className="record-game-index" aria-hidden="true">
+                  {String(record.games.length - index).padStart(3, "0")}
+                </div>
+                <div className="record-game-result">
+                  <span>{game.isCorrect ? "判断命中" : "判断偏差"}</span>
+                  <strong>{game.isCorrect ? "✓" : "×"}</strong>
+                </div>
+                <dl>
+                  <div>
+                    <dt>真实身份</dt>
+                    <dd>{game.opponentType === "human" ? "真人" : "AI"}</dd>
+                  </div>
+                  <div>
+                    <dt>你的判断</dt>
+                    <dd>
+                      {game.guess === null
+                        ? "未提交"
+                        : game.guess === "human"
+                          ? "真人"
+                          : "AI"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>对话消息</dt>
+                    <dd>{game.messageCount}</dd>
+                  </div>
+                  <div>
+                    <dt>持续时间</dt>
+                    <dd>{formatRecordDuration(game.durationSeconds)}</dd>
+                  </div>
+                </dl>
+                <div className="record-game-meta">
+                  <time dateTime={new Date(game.finishedAt).toISOString()}>
+                    {formatRecordDate(game.finishedAt)}
+                  </time>
+                  <strong>+{game.scoreDelta}</strong>
+                </div>
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function formatRecordDate(value: number): string {
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(value);
+}
+
+function formatRecordDuration(seconds: number): string {
+  const safeSeconds = Math.max(0, Math.floor(seconds));
+  return `${String(Math.floor(safeSeconds / 60)).padStart(2, "0")}:${String(
+    safeSeconds % 60,
+  ).padStart(2, "0")}`;
+}
+
+function SupportDialog({ onClose }: { onClose: () => void }) {
+  useEscapeToClose(onClose);
+  return (
+    <div className="modal-backdrop support-backdrop" role="presentation">
+      <dialog
+        className="modal support-modal"
+        open
+        aria-modal="true"
+        aria-labelledby="support-title"
+      >
+        <button
+          className="modal-close"
+          type="button"
+          aria-label="关闭支持作者弹窗"
+          onClick={onClose}
+        >
+          ×
+        </button>
+        <div className="support-avatar" aria-hidden="true">
+          ☕
+        </div>
+        <span className="support-thanks">THANK YOU!</span>
+        <h2 id="support-title">请作者喝杯奶茶叭</h2>
+        <p>谢谢你喜欢这个小实验呀，量力支持就好喵 ฅ(˵ •̀ ᴗ - ˵ ) ✧</p>
+        <div className="support-code-placeholder" aria-label="收款码待添加">
+          <span>QR SLOT / 01</span>
+          <strong>收款码正在赶来 ing</strong>
+          <small>等你把图片路径投喂给我，就会在这里出现啦</small>
+        </div>
+        <button className="support-close-action" type="button" onClick={onClose}>
+          好哒，下次一定
+        </button>
+      </dialog>
+    </div>
+  );
+}
+
+function CreatorDialog({ onClose }: { onClose: () => void }) {
+  useEscapeToClose(onClose);
+  return (
+    <div className="modal-backdrop creator-backdrop" role="presentation">
+      <dialog
+        className="modal creator-modal"
+        open
+        aria-modal="true"
+        aria-labelledby="creator-title"
+      >
+        <button
+          className="modal-close"
+          type="button"
+          aria-label="关闭关注作者弹窗"
+          onClick={onClose}
+        >
+          ×
+        </button>
+        <p className="creator-kicker">FOLLOW THE CREATOR / 02</p>
+        <h2 id="creator-title">来找作者玩叭</h2>
+        <p>
+          开发碎片、更新进度和偶尔掉落的脑洞，都在这里等你喵
+          ฅ(˵ •̀ ᴗ - ˵ ) ✧
+        </p>
+        <div className="creator-link-list">
+          <a
+            className="creator-platform is-bilibili"
+            href={BILIBILI_SPACE_URL}
+            target="_blank"
+            rel="noreferrer"
+          >
+            <span>BILIBILI / 哔哩哔哩</span>
+            <strong>去 B 站关注作者</strong>
+            <i aria-hidden="true">↗</i>
+          </a>
+          <a
+            className="creator-platform is-douyin"
+            href={DOUYIN_SPACE_URL}
+            target="_blank"
+            rel="noreferrer"
+          >
+            <span>DOUYIN / 抖音</span>
+            <strong>去抖音看看作者</strong>
+            <i aria-hidden="true">↗</i>
+          </a>
+        </div>
+        <button className="support-close-action" type="button" onClick={onClose}>
+          好哒，晚点去逛
+        </button>
+      </dialog>
+    </div>
+  );
+}
+
+function FeedbackDialog({
+  canSubmit,
+  busy,
+  error,
+  message,
+  onClose,
+  onSubmit,
+}: {
+  canSubmit: boolean;
+  busy: boolean;
+  error: string | null;
+  message: string | null;
+  onClose: () => void;
+  onSubmit: (input: {
+    category: FeedbackCategory;
+    title: string;
+    details: string;
+  }) => Promise<void>;
+}) {
+  const [category, setCategory] = useState<FeedbackCategory>("bug");
+  const [title, setTitle] = useState("");
+  const [details, setDetails] = useState("");
+  useEscapeToClose(onClose);
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    void onSubmit({ category, title, details });
+  }
+
+  return (
+    <div className="modal-backdrop feedback-backdrop" role="presentation">
+      <dialog
+        className="modal feedback-modal"
+        open
+        aria-modal="true"
+        aria-labelledby="feedback-title"
+      >
+        <button
+          className="modal-close"
+          type="button"
+          aria-label="关闭反馈弹窗"
+          onClick={onClose}
+        >
+          ×
+        </button>
+        <p className="feedback-kicker">BUG REPORT / IDEA DROP</p>
+        <h2 id="feedback-title">投喂一点反馈吧</h2>
+        {message ? (
+          <div className="feedback-success" role="status">
+            <span aria-hidden="true">✓</span>
+            <strong>{message}</strong>
+            <p>
+              已经安全排进每日反馈汇总，作者会认真看完每一条哒
+              (ง •̀_•́)ง
+            </p>
+            <button
+              className="support-close-action"
+              type="button"
+              onClick={onClose}
+            >
+              好耶，关闭
+            </button>
+          </div>
+        ) : (
+          <form className="feedback-form" onSubmit={submit}>
+            <p>
+              Bug、奇怪体验和灵光一闪都可以写。请不要填写密码、验证码或其他隐私信息喵。
+            </p>
+            <fieldset disabled={busy || !canSubmit}>
+              <legend>反馈类型</legend>
+              <div className="feedback-category">
+                {([
+                  ["bug", "发现 Bug"],
+                  ["suggestion", "功能建议"],
+                  ["other", "其他想法"],
+                ] as const).map(([value, label]) => (
+                  <label
+                    key={value}
+                    className={category === value ? "is-selected" : ""}
+                  >
+                    <input
+                      type="radio"
+                      name="feedback-category"
+                      value={value}
+                      checked={category === value}
+                      onChange={() => setCategory(value)}
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
+              <label className="field">
+                <span>一句话标题 / TITLE</span>
+                <input
+                  type="text"
+                  minLength={2}
+                  maxLength={80}
+                  value={title}
+                  placeholder="例如：手机横屏时按钮被挡住了"
+                  onChange={(event) => setTitle(event.target.value)}
+                />
+                <small>{title.length}/80</small>
+              </label>
+              <label className="field">
+                <span>详细描述 / DETAILS</span>
+                <textarea
+                  minLength={10}
+                  maxLength={2000}
+                  rows={6}
+                  value={details}
+                  placeholder="发生了什么、你原本期待什么？如果能写下复现步骤就更好啦。"
+                  onChange={(event) => setDetails(event.target.value)}
+                />
+                <small>{details.length}/2000</small>
+              </label>
+            </fieldset>
+            {!canSubmit && (
+              <p className="feedback-login-note" role="note">
+                当前是本地演示身份。登录账户后，反馈才可以安全送到作者邮箱喵。
+              </p>
+            )}
+            {error && (
+              <p className="feedback-error" role="alert">
+                {error}
+              </p>
+            )}
+            <button
+              className="primary-action"
+              type="submit"
+              disabled={
+                busy ||
+                !canSubmit ||
+                title.trim().length < 2 ||
+                details.trim().length < 10
+              }
+            >
+              {busy ? "正在提交 ing…" : "提交反馈喵"}
+              <span aria-hidden="true">↗</span>
+            </button>
+          </form>
+        )}
       </dialog>
     </div>
   );

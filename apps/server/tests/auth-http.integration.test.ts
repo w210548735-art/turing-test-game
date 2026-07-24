@@ -6,6 +6,11 @@ import {
   InMemoryAuthRepository,
   type PasswordHasher,
 } from "../src/auth/index.js";
+import {
+  MemoryFeedbackRepository,
+  type FeedbackDigestEmailMessage,
+  type FeedbackEmailDelivery,
+} from "../src/feedback/index.js";
 import { buildServer, type ServerContext } from "../src/server.js";
 
 const TEST_ORIGIN = "http://localhost:5173";
@@ -20,11 +25,18 @@ class TestPasswordHasher implements PasswordHasher {
   }
 }
 
-class TestOutbox implements EmailDelivery {
+class TestOutbox implements EmailDelivery, FeedbackEmailDelivery {
   readonly messages: EmailMessage[] = [];
+  readonly feedbackMessages: FeedbackDigestEmailMessage[] = [];
 
   async send(message: EmailMessage): Promise<void> {
     this.messages.push(message);
+  }
+
+  async sendFeedbackDigest(
+    message: FeedbackDigestEmailMessage,
+  ): Promise<void> {
+    this.feedbackMessages.push(message);
   }
 
   latest(purpose: EmailMessage["purpose"]): EmailMessage {
@@ -52,16 +64,28 @@ function cookieHeader(
 describe("账户认证 HTTP 路由", () => {
   let context: ServerContext;
   const outbox = new TestOutbox();
+  const feedbackRepository = new MemoryFeedbackRepository();
 
   before(async () => {
     process.env.LOG_LEVEL = "silent";
     process.env.NODE_ENV = "development";
     process.env.ALLOWED_ORIGINS = TEST_ORIGIN;
+    feedbackRepository.now = () =>
+      new Date("2026-07-25T01:59:00.000Z");
     context = await buildServer({
       authRepository: new InMemoryAuthRepository(),
       emailDelivery: outbox,
       passwordHasher: new TestPasswordHasher(),
       registrationOpen: true,
+      feedbackRepository,
+      feedbackDelivery: outbox,
+      feedbackRecipientEmail: "admin@example.com",
+      feedbackDigest: {
+        now: () => new Date("2026-07-25T02:00:00.000Z"),
+        intervalMs: 24 * 60 * 60_000,
+        leaseOwner: "auth-http-test-worker",
+        autoStart: false,
+      },
     });
   });
 
@@ -273,5 +297,122 @@ describe("账户认证 HTTP 路由", () => {
       },
     });
     assert.equal(badCsrf.statusCode, 403);
+  });
+
+  it("仅允许已登录账户携带 CSRF 提交结构化反馈", async () => {
+    const email = "feedback-route@example.com";
+    const password = "Feedback-Password-2026!";
+    await context.app.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      headers: { origin: TEST_ORIGIN },
+      payload: { email, password },
+    });
+    await context.app.inject({
+      method: "POST",
+      url: "/api/auth/verify-email",
+      headers: { origin: TEST_ORIGIN },
+      payload: {
+        token: outbox.latest("EMAIL_VERIFICATION").token,
+      },
+    });
+    const login = await context.app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      headers: { origin: TEST_ORIGIN },
+      payload: { email, password },
+    });
+    const body = login.json<{ csrfToken: string; user: { id: string } }>();
+    const cookies = cookieHeader(login.headers["set-cookie"]);
+
+    const invalid = await context.app.inject({
+      method: "POST",
+      url: "/api/feedback",
+      headers: {
+        origin: TEST_ORIGIN,
+        cookie: cookies,
+        "x-csrf-token": body.csrfToken,
+      },
+      payload: {
+        category: "bug",
+        title: "短",
+        details: "也太短",
+      },
+    });
+    assert.equal(invalid.statusCode, 400);
+
+    const accepted = await context.app.inject({
+      method: "POST",
+      url: "/api/feedback",
+      headers: {
+        origin: TEST_ORIGIN,
+        cookie: cookies,
+        "x-csrf-token": body.csrfToken,
+      },
+      payload: {
+        category: "suggestion",
+        title: "希望增加历史对局筛选",
+        details: "希望可以按照真人局和 AI 局筛选历史对局，谢谢。",
+      },
+    });
+    assert.equal(accepted.statusCode, 202);
+    assert.equal(accepted.json<{ accepted: boolean }>().accepted, true);
+    assert.equal(feedbackRepository.records.at(-1)?.userId, body.user.id);
+    assert.equal(
+      feedbackRepository.records.at(-1)?.deliveryStatus,
+      "pending",
+    );
+    assert.equal(outbox.feedbackMessages.length, 0);
+    await context.feedback.worker?.runOnce();
+    assert.equal(
+      feedbackRepository.records.at(-1)?.deliveryStatus,
+      "sent",
+    );
+    assert.equal(outbox.feedbackMessages.at(-1)?.to, "admin@example.com");
+
+    for (let index = 0; index < 4; index += 1) {
+      const withinLimit = await context.app.inject({
+        method: "POST",
+        url: "/api/feedback",
+        headers: {
+          origin: TEST_ORIGIN,
+          cookie: cookies,
+          "x-csrf-token": body.csrfToken,
+        },
+        payload: {
+          category: "other",
+          title: `补充反馈 ${index + 1}`,
+          details: `这是同一账户当天允许提交的第 ${index + 2} 条反馈内容。`,
+        },
+      });
+      assert.equal(withinLimit.statusCode, 202);
+    }
+    const rateLimited = await context.app.inject({
+      method: "POST",
+      url: "/api/feedback",
+      headers: {
+        origin: TEST_ORIGIN,
+        cookie: cookies,
+        "x-csrf-token": body.csrfToken,
+      },
+      payload: {
+        category: "other",
+        title: "超出每日限额",
+        details: "同一账户当天提交第六条反馈时应被组合限流拒绝。",
+      },
+    });
+    assert.equal(rateLimited.statusCode, 429);
+
+    const anonymous = await context.app.inject({
+      method: "POST",
+      url: "/api/feedback",
+      headers: { origin: TEST_ORIGIN },
+      payload: {
+        category: "other",
+        title: "匿名反馈",
+        details: "这条反馈不应被匿名账户提交。",
+      },
+    });
+    assert.equal(anonymous.statusCode, 401);
   });
 });

@@ -156,6 +156,7 @@ describe("默认策略", () => {
       "chat.send",
       "chat.typing",
       "game.report",
+      "feedback.submit",
       "ai.request",
       "ws.handshake",
     ]) {

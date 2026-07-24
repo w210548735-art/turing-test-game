@@ -10,23 +10,28 @@ import {
   registerAccountResponseSchema,
   resetPasswordRequestSchema,
   resetPasswordResponseSchema,
+  submitFeedbackRequestSchema,
+  submitFeedbackResponseSchema,
   verifyEmailRequestSchema,
   verifyEmailResponseSchema,
   type AccountSessionResponse,
   type ClientEvent,
   type ForgotPasswordRequest,
+  type FeedbackCategory,
   type Identity,
   type LoginAccountRequest,
   type ProfileInput,
   type RegisterAccountRequest,
   type ResetPasswordRequest,
   type ServerEvent,
+  type SubmitFeedbackRequest,
   type VerifyEmailRequest,
 } from "@turing-game/protocol";
 
 export type {
   AccountSessionResponse,
   ClientEvent,
+  FeedbackCategory,
   ProfileInput,
   ServerEvent,
 };
@@ -237,6 +242,24 @@ export async function logoutAccount(
     throw new Error(await parseError(response));
   }
   return logoutResponseSchema.parse(await response.json());
+}
+
+export async function submitAccountFeedback(
+  csrfToken: string,
+  input: SubmitFeedbackRequest,
+): Promise<ReturnType<typeof submitFeedbackResponseSchema.parse>> {
+  const validatedInput = parseAccountInput(
+    submitFeedbackRequestSchema.safeParse(input),
+  );
+  const response = await postJson(
+    "/api/feedback",
+    validatedInput,
+    csrfToken,
+  );
+  if (!response.ok) {
+    throw new Error(await parseError(response));
+  }
+  return submitFeedbackResponseSchema.parse(await response.json());
 }
 
 export async function saveProfile(

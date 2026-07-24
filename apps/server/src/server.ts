@@ -8,6 +8,7 @@ import {
   profileInputSchema,
   registerAccountRequestSchema,
   resetPasswordRequestSchema,
+  submitFeedbackRequestSchema,
   verifyEmailRequestSchema,
   type ClientEvent,
 } from "@turing-game/protocol";
@@ -47,12 +48,19 @@ import {
 import {
   createDatabase,
   BanRepository as DatabaseBanRepository,
+  FeedbackRepository as DatabaseFeedbackRepository,
   GameRepository,
   PostgresAuthRepository,
   ReportRepository as DatabaseReportRepository,
   runRetentionJobs,
   type DatabaseState,
 } from "./db/index.js";
+import {
+  FeedbackDigestWorker,
+  FeedbackService,
+  type FeedbackEmailDelivery,
+  type FeedbackRepositoryPort,
+} from "./feedback/index.js";
 import {
   DEFAULT_MAX_CONCURRENT_ROOMS,
   DEFAULT_MAX_QUEUE_SIZE,
@@ -144,6 +152,10 @@ export interface ServerContext {
     registrationOpen: boolean;
     emailConfigured: boolean;
   };
+  feedback: {
+    configured: boolean;
+    worker?: FeedbackDigestWorker;
+  };
 }
 
 export interface ServerOptions {
@@ -151,6 +163,16 @@ export interface ServerOptions {
   emailDelivery?: EmailDelivery;
   passwordHasher?: PasswordHasher;
   registrationOpen?: boolean;
+  feedbackRepository?: FeedbackRepositoryPort;
+  feedbackDelivery?: FeedbackEmailDelivery;
+  feedbackRecipientEmail?: string;
+  feedbackDigest?: {
+    now?: () => Date;
+    leaseOwner?: string;
+    leaseMs?: number;
+    intervalMs?: number;
+    autoStart?: boolean;
+  };
 }
 
 export async function buildServer(
@@ -197,6 +219,10 @@ export async function buildServer(
         "req.body.password",
         "req.body.newPassword",
         "req.body.currentPassword",
+        "body.details",
+        "body.title",
+        "req.body.details",
+        "req.body.title",
         "query.ticket",
         "req.query.ticket",
       ],
@@ -257,6 +283,43 @@ export async function buildServer(
       );
     },
   };
+  const feedbackRepository =
+    options.feedbackRepository ??
+    (database.available
+      ? new DatabaseFeedbackRepository(database.db)
+      : undefined);
+  const feedbackDelivery =
+    options.feedbackDelivery ?? qqEmailDelivery;
+  const feedbackRecipientValue =
+    options.feedbackRecipientEmail ??
+    process.env.FEEDBACK_RECIPIENT_EMAIL;
+  const feedbackRecipientEmail = feedbackRecipientValue?.trim()
+    ? canonicalizeEmail(feedbackRecipientValue)
+    : undefined;
+  const feedbackService =
+    feedbackRepository
+      ? new FeedbackService({
+          repository: feedbackRepository,
+        })
+      : undefined;
+  const feedbackDigestWorker =
+    feedbackRepository && feedbackDelivery && feedbackRecipientEmail
+      ? new FeedbackDigestWorker({
+          repository: feedbackRepository,
+          delivery: feedbackDelivery,
+          recipientEmail: feedbackRecipientEmail,
+          now: options.feedbackDigest?.now,
+          leaseOwner: options.feedbackDigest?.leaseOwner,
+          leaseMs: options.feedbackDigest?.leaseMs,
+          intervalMs: options.feedbackDigest?.intervalMs,
+          onFailure(digestId, errorName) {
+            app.log.error(
+              { digestId, errorName },
+              "feedback digest email delivery failed",
+            );
+          },
+        })
+      : undefined;
   if (
     production &&
     registrationOpen &&
@@ -830,6 +893,10 @@ export async function buildServer(
         emailConfigured,
         persistence: database.available ? "postgresql" : "memory-demo",
       },
+      feedback: {
+        configured: Boolean(feedbackDigestWorker),
+        persistence: feedbackRepository ? "available" : "unavailable",
+      },
     };
   });
 
@@ -868,6 +935,9 @@ export async function buildServer(
         registrationOpen,
         emailConfigured,
         ready: !registrationOpen || (databaseOk && emailConfigured),
+      },
+      feedback: {
+        configured: Boolean(feedbackDigestWorker),
       },
     };
   });
@@ -1090,6 +1160,49 @@ export async function buildServer(
         }),
       );
       return { loggedOut: true as const };
+    },
+  );
+
+  app.post<{ Body: unknown }>(
+    "/api/feedback",
+    async (request, reply) => {
+      const session = await sessionFromRequest(request);
+      if (!session?.accountAuthenticated) {
+        throw new AppError(
+          "ACCOUNT_REQUIRED",
+          "请先登录已验证的账号，再提交反馈。",
+          401,
+        );
+      }
+      requireCsrf(request, session);
+      await authService.assertAccountCapability(session.userId, "ACCOUNT");
+      if (!feedbackService) {
+        throw new AppError(
+          "FEEDBACK_UNAVAILABLE",
+          "反馈通道暂时开小差了，请稍后再试喵。",
+          503,
+        );
+      }
+      const parsed = submitFeedbackRequestSchema.safeParse(request.body);
+      if (!parsed.success) {
+        throw new AppError(
+          "INVALID_FEEDBACK",
+          "请选择反馈分类；标题需要 2–80 字，详细内容需要 10–2000 字。",
+        );
+      }
+      await consumeGameRateLimit("feedback.submit", session);
+      const result = await feedbackService.submit({
+        userId: session.userId,
+        category: parsed.data.category,
+        title: parsed.data.title.normalize("NFKC"),
+        details: parsed.data.details.normalize("NFKC"),
+      });
+      reply.status(202);
+      return {
+        accepted: true as const,
+        feedbackId: result.feedbackId,
+        message: "感谢你的反馈喵，作者正在加急修改 ing～",
+      };
     },
   );
 
@@ -1537,12 +1650,16 @@ export async function buildServer(
     }
     games.shutdown();
     wss.close();
+    await feedbackDigestWorker?.stop();
     qqEmailDelivery?.close();
     await redis.close();
     if (database.available) {
       await database.close();
     }
   });
+  if (options.feedbackDigest?.autoStart !== false) {
+    feedbackDigestWorker?.start();
+  }
 
   return {
     app,
@@ -1558,6 +1675,10 @@ export async function buildServer(
       devices: deviceService,
       registrationOpen,
       emailConfigured,
+    },
+    feedback: {
+      configured: Boolean(feedbackDigestWorker),
+      worker: feedbackDigestWorker,
     },
   };
 }

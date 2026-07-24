@@ -17,6 +17,7 @@ services:
       QQ_SMTP_USER: ${QQ_SMTP_USER:?set QQ_SMTP_USER}
       QQ_SMTP_FROM_NAME: ${QQ_SMTP_FROM_NAME:-图灵测试}
       QQ_SMTP_AUTH_CODE_FILE: /run/secrets/qq_smtp_auth_code
+      FEEDBACK_RECIPIENT_EMAIL: ${FEEDBACK_RECIPIENT_EMAIL:-admin@example.com}
       REGISTRATION_OPEN: ${REGISTRATION_OPEN:-true}
       ALLOW_ONLINE_GUESTS: ${ALLOW_ONLINE_GUESTS:-false}
       DATABASE_URL: postgresql://${POSTGRES_USER:-turing}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-turing}

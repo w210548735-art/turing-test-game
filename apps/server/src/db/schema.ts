@@ -69,6 +69,19 @@ export const banScopeEnum = pgEnum("ban_scope", [
   "device",
   "ip",
 ]);
+export const feedbackCategoryEnum = pgEnum("feedback_category", [
+  "bug",
+  "suggestion",
+  "other",
+]);
+export const feedbackDeliveryStatusEnum = pgEnum(
+  "feedback_delivery_status",
+  ["pending", "sent", "failed"],
+);
+export const feedbackDigestStatusEnum = pgEnum(
+  "feedback_digest_status",
+  ["pending", "sending", "sent", "failed"],
+);
 
 export const users = pgTable(
   "users",
@@ -694,6 +707,120 @@ export const bans = pgTable(
   ],
 );
 
+export const feedbackDigestRuns = pgTable(
+  "feedback_digest_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    cutoffAt: timestamp("cutoff_at", {
+      withTimezone: true,
+      mode: "date",
+    }).notNull(),
+    messageId: text("message_id").notNull(),
+    status: feedbackDigestStatusEnum("status")
+      .notNull()
+      .default("pending"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    nextAttemptAt: timestamp("next_attempt_at", {
+      withTimezone: true,
+      mode: "date",
+    })
+      .notNull()
+      .defaultNow(),
+    leaseOwner: text("lease_owner"),
+    leaseExpiresAt: timestamp("lease_expires_at", {
+      withTimezone: true,
+      mode: "date",
+    }),
+    sentAt: timestamp("sent_at", {
+      withTimezone: true,
+      mode: "date",
+    }),
+    lastErrorCode: text("last_error_code"),
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+      mode: "date",
+    })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", {
+      withTimezone: true,
+      mode: "date",
+    })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("feedback_digest_runs_cutoff_uidx").on(table.cutoffAt),
+    uniqueIndex("feedback_digest_runs_message_id_uidx").on(table.messageId),
+    index("feedback_digest_runs_due_idx").on(
+      table.status,
+      table.nextAttemptAt,
+    ),
+    check(
+      "feedback_digest_runs_attempt_nonnegative",
+      sql`${table.attemptCount} >= 0`,
+    ),
+    check(
+      "feedback_digest_runs_lease_consistent",
+      sql`(${table.status} = 'sending' AND ${table.leaseOwner} IS NOT NULL AND ${table.leaseExpiresAt} IS NOT NULL) OR (${table.status} <> 'sending' AND ${table.leaseOwner} IS NULL AND ${table.leaseExpiresAt} IS NULL)`,
+    ),
+    check(
+      "feedback_digest_runs_sent_consistent",
+      sql`(${table.status} = 'sent' AND ${table.sentAt} IS NOT NULL) OR (${table.status} <> 'sent' AND ${table.sentAt} IS NULL)`,
+    ),
+  ],
+);
+
+export const feedback = pgTable(
+  "feedback",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    category: feedbackCategoryEnum("category").notNull(),
+    title: text("title").notNull(),
+    details: text("details").notNull(),
+    deliveryStatus: feedbackDeliveryStatusEnum("delivery_status")
+      .notNull()
+      .default("pending"),
+    deliveredAt: timestamp("delivered_at", {
+      withTimezone: true,
+      mode: "date",
+    }),
+    digestRunId: uuid("digest_run_id").references(
+      () => feedbackDigestRuns.id,
+      { onDelete: "restrict" },
+    ),
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+      mode: "date",
+    })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("feedback_user_created_idx").on(table.userId, table.createdAt),
+    index("feedback_delivery_created_idx").on(
+      table.deliveryStatus,
+      table.createdAt,
+    ),
+    index("feedback_digest_run_idx").on(table.digestRunId),
+    check(
+      "feedback_title_length",
+      sql`char_length(${table.title}) BETWEEN 2 AND 80`,
+    ),
+    check(
+      "feedback_details_length",
+      sql`char_length(${table.details}) BETWEEN 10 AND 2000`,
+    ),
+    check(
+      "feedback_delivery_consistent",
+      sql`(${table.deliveryStatus} = 'sent' AND ${table.deliveredAt} IS NOT NULL) OR (${table.deliveryStatus} <> 'sent' AND ${table.deliveredAt} IS NULL)`,
+    ),
+  ],
+);
+
 export type UserRow = typeof users.$inferSelect;
 export type NewUserRow = typeof users.$inferInsert;
 export type DeviceRow = typeof devices.$inferSelect;
@@ -722,3 +849,7 @@ export type ModerationEventRow = typeof moderationEvents.$inferSelect;
 export type NewModerationEventRow = typeof moderationEvents.$inferInsert;
 export type BanRow = typeof bans.$inferSelect;
 export type NewBanRow = typeof bans.$inferInsert;
+export type FeedbackRow = typeof feedback.$inferSelect;
+export type NewFeedbackRow = typeof feedback.$inferInsert;
+export type FeedbackDigestRunRow = typeof feedbackDigestRuns.$inferSelect;
+export type NewFeedbackDigestRunRow = typeof feedbackDigestRuns.$inferInsert;
