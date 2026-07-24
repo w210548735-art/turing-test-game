@@ -1,0 +1,1194 @@
+import { randomUUID } from "node:crypto";
+import type { WebSocket } from "ws";
+import { requestAiReply } from "./ai.js";
+import type {
+  AiReserveRequest,
+  AiSettleRequest,
+  AiSettlementOutcome,
+  AiUsageBudgetService,
+} from "./ai/usage-budget.js";
+import type { GameRepository } from "./db/repositories/game-repository.js";
+import type { ReportRepository as DatabaseReportRepository } from "./db/repositories/report-repository.js";
+import { AppError } from "./errors.js";
+import type { AiBudgetController } from "./matchmaking/ai-budget.js";
+import {
+  ModerationPipeline,
+  type ModerationDecision,
+} from "./moderation/index.js";
+import type { RoomSnapshotStore } from "./rooms/room-store.js";
+import {
+  moderateAiOutput,
+  validateReportReason,
+} from "./security.js";
+import type {
+  ChatMessage,
+  Guess,
+  Participant,
+  ReportRecord,
+  Room,
+  Session,
+  SettlementView,
+  WsEnvelope,
+} from "./types.js";
+
+export const ENTRY_GATE_MS = 5_000;
+export const GUESS_UNLOCK_MS = 20_000;
+export const ROOM_DURATION_MS = 5 * 60_000;
+export const DISCONNECT_GRACE_MS = 30_000;
+export const TYPING_THROTTLE_MS = 1_500;
+export const TYPING_EXPIRY_MS = 3_000;
+export const MAX_MESSAGES_PER_PLAYER = 20;
+export const AI_RATIO_TARGET = 0.25;
+export const AI_USAGE_ESTIMATED_TOKENS = 2_048;
+const AI_USAGE_ESTIMATED_PROMPT_TOKENS = 1_848;
+const AI_USAGE_MAX_COMPLETION_TOKENS = 200;
+
+type GameAiUsageBudget = Pick<AiUsageBudgetService, "reserve" | "settle">;
+
+interface QueuedPlayer {
+  session: Session;
+  joinedAt: number;
+  gateTimer?: NodeJS.Timeout;
+  reserved: boolean;
+}
+
+export interface GameServiceOptions {
+  now?: () => number;
+  random?: () => number;
+  setTimer?: (callback: () => void, milliseconds: number) => NodeJS.Timeout;
+  clearTimer?: (timer: NodeJS.Timeout) => void;
+  aiReply?: typeof requestAiReply;
+  onMetric?: (metric: MatchMetrics) => void;
+  aiBudget?: AiBudgetController;
+  aiUsageBudget?: GameAiUsageBudget;
+  roomStore?: RoomSnapshotStore;
+  gameRepository?: GameRepository;
+  reportRepository?: DatabaseReportRepository;
+  moderation?: ModerationPipeline;
+  onModerationDecision?: (
+    decision: ModerationDecision,
+    session: Session,
+    room: Room,
+  ) => void | Promise<void>;
+  onPersistenceError?: (error: unknown, operation: string) => void;
+}
+
+export interface MatchMetrics {
+  recentGames: number;
+  aiGames: number;
+  aiRatio: number;
+  target: number;
+  aboveTarget: boolean;
+}
+
+export class GameService {
+  readonly rooms = new Map<string, Room>();
+  readonly reports = new Map<string, ReportRecord>();
+
+  private readonly queue: QueuedPlayer[] = [];
+  private readonly recentMatchTypes: Array<"human" | "ai"> = [];
+  private readonly now: () => number;
+  private readonly random: () => number;
+  private readonly setTimer: (
+    callback: () => void,
+    milliseconds: number,
+  ) => NodeJS.Timeout;
+  private readonly clearTimer: (timer: NodeJS.Timeout) => void;
+  private readonly aiReply: typeof requestAiReply;
+  private readonly onMetric?: (metric: MatchMetrics) => void;
+  private readonly aiBudget?: AiBudgetController;
+  private readonly aiUsageBudget?: GameAiUsageBudget;
+  private readonly roomStore?: RoomSnapshotStore;
+  private readonly gameRepository?: GameRepository;
+  private readonly reportRepository?: DatabaseReportRepository;
+  private readonly moderation: ModerationPipeline;
+  private readonly onModerationDecision?: GameServiceOptions["onModerationDecision"];
+  private readonly onPersistenceError?: GameServiceOptions["onPersistenceError"];
+  private stopping = false;
+
+  constructor(options: GameServiceOptions = {}) {
+    this.now = options.now ?? Date.now;
+    this.random = options.random ?? Math.random;
+    this.setTimer = options.setTimer ?? setTimeout;
+    this.clearTimer = options.clearTimer ?? clearTimeout;
+    this.aiReply = options.aiReply ?? requestAiReply;
+    this.onMetric = options.onMetric;
+    this.aiBudget = options.aiBudget;
+    this.aiUsageBudget = options.aiUsageBudget;
+    this.roomStore = options.roomStore;
+    this.gameRepository = options.gameRepository;
+    this.reportRepository = options.reportRepository;
+    this.moderation = options.moderation ?? new ModerationPipeline();
+    this.onModerationDecision = options.onModerationDecision;
+    this.onPersistenceError = options.onPersistenceError;
+  }
+
+  joinQueue(session: Session): void {
+    if (!session.socket || session.socket.readyState !== session.socket.OPEN) {
+      throw new AppError("SOCKET_NOT_READY", "连接尚未准备好。");
+    }
+    if (session.roomId && this.rooms.get(session.roomId)?.status === "active") {
+      throw new AppError("ALREADY_IN_ROOM", "你已经在一个对局中。");
+    }
+    if (this.queue.some((queued) => queued.session.userId === session.userId)) {
+      throw new AppError("ALREADY_QUEUED", "你已经在匹配队列中。");
+    }
+
+    const queued: QueuedPlayer = {
+      session,
+      joinedAt: this.now(),
+      reserved: false,
+    };
+    this.queue.push(queued);
+    this.send(session, {
+      type: "match.queued",
+      gateEndsAt: queued.joinedAt + ENTRY_GATE_MS,
+    });
+    this.tryReserveHumans();
+    if (!queued.reserved) {
+      queued.gateTimer = this.setTimer(
+        () => this.fillWithAiIfStillWaiting(queued),
+        ENTRY_GATE_MS,
+      );
+    }
+  }
+
+  leaveQueue(session: Session): void {
+    const index = this.queue.findIndex(
+      (queued) => queued.session.userId === session.userId,
+    );
+    if (index < 0) {
+      return;
+    }
+    const [queued] = this.queue.splice(index, 1);
+    if (queued?.gateTimer) {
+      this.clearTimer(queued.gateTimer);
+    }
+  }
+
+  reconnect(session: Session, socket: WebSocket): void {
+    session.socket = socket;
+    const room = session.roomId ? this.rooms.get(session.roomId) : undefined;
+    if (!room || room.status !== "active") {
+      return;
+    }
+    const participant = this.participantFor(room, session.userId);
+    participant.connected = true;
+    if (participant.disconnectTimer) {
+      this.clearTimer(participant.disconnectTimer);
+      participant.disconnectTimer = undefined;
+    }
+    this.send(session, {
+      type: "game.reconnected",
+      message: "连接已恢复。",
+    });
+    this.send(session, {
+      type: "match.found",
+      gameId: room.id,
+      startedAt: room.createdAt,
+      endsAt: room.expiresAt,
+      minGuessAt: room.createdAt + GUESS_UNLOCK_MS,
+      opponentLabel: `匿名玩家 / ${room.id.slice(0, 2).toUpperCase()}`,
+    });
+  }
+
+  handleDisconnect(session: Session): void {
+    this.leaveQueue(session);
+    if (this.stopping) {
+      return;
+    }
+    const room = session.roomId ? this.rooms.get(session.roomId) : undefined;
+    if (!room || room.status !== "active") {
+      return;
+    }
+    const participant = this.participantFor(room, session.userId);
+    participant.connected = false;
+    this.broadcastToOthers(room, session.userId, {
+      type: "game.disconnected",
+      message: "对方连接中断，正在等待恢复。",
+    });
+    participant.disconnectTimer = this.setTimer(() => {
+      if (participant.connected || room.status !== "active") {
+        return;
+      }
+      this.settle(room, "disconnect");
+    }, DISCONNECT_GRACE_MS);
+  }
+
+  sendChat(
+    session: Session,
+    rawText: unknown,
+    clientMessageId?: string,
+  ): ChatMessage {
+    const room = this.requireAuthorizedRoom(session);
+    const participant = this.participantFor(room, session.userId);
+    if (clientMessageId) {
+      const existing = room.messages.find(
+        (message) =>
+          message.senderId === session.userId &&
+          message.clientMessageId === clientMessageId,
+      );
+      if (existing) {
+        this.sendChatMessage(session, existing, false);
+        return existing;
+      }
+    }
+    if (participant.guess) {
+      throw new AppError(
+        "GUESS_ALREADY_LOCKED",
+        "判断锁定后不能继续发送消息。",
+      );
+    }
+    if (participant.messageCount >= MAX_MESSAGES_PER_PLAYER) {
+      throw new AppError(
+        "MESSAGE_LIMIT_REACHED",
+        "本局每位玩家最多发送 20 条消息。",
+      );
+    }
+    const moderation = this.moderation.evaluate({
+      text: rawText,
+      surface: "CHAT",
+      audit: {
+        actorId: session.userId,
+        ipHash: session.ipHash,
+      },
+    });
+    void this.onModerationDecision?.(moderation, session, room);
+    if (moderation.action === "TERMINATE") {
+      this.settle(room, "disconnect");
+      throw new AppError(
+        "SAFETY_TERMINATED",
+        moderation.userMessage ?? "检测到高风险内容，本局已结束。",
+      );
+    }
+    if (moderation.action === "BLOCK") {
+      throw new AppError(
+        "CONTENT_BLOCKED",
+        moderation.userMessage ?? "该内容不适合匿名聊天，消息未发送。",
+      );
+    }
+    const text = moderation.text;
+    const replaced = moderation.action === "REDACT";
+    const message: ChatMessage = {
+      id: randomUUID(),
+      senderId: session.userId,
+      sender: "self",
+      text,
+      at: this.now(),
+      sequence: room.messages.length + 1,
+      clientMessageId,
+      moderated: replaced,
+    };
+    participant.messageCount += 1;
+    room.messages.push(message);
+    this.persistMessage(room, message);
+    this.broadcastMessage(room, message, replaced);
+    if (room.opponentType === "ai") {
+      this.scheduleAiReply(room);
+    }
+    return message;
+  }
+
+  setTyping(session: Session, active: unknown): void {
+    if (typeof active !== "boolean") {
+      throw new AppError("INVALID_TYPING_STATE", "输入状态格式无效。");
+    }
+    const room = this.requireAuthorizedRoom(session);
+    const participant = this.participantFor(room, session.userId);
+    const now = this.now();
+    if (active && now - participant.lastTypingAt < TYPING_THROTTLE_MS) {
+      return;
+    }
+    participant.lastTypingAt = now;
+    if (participant.typingExpiry) {
+      this.clearTimer(participant.typingExpiry);
+      participant.typingExpiry = undefined;
+    }
+    this.broadcastToOthers(room, session.userId, {
+      type: active ? "chat.typing_start" : "chat.typing_stop",
+      status: active ? session.profile.typingStatus : undefined,
+    });
+    if (active) {
+      participant.typingExpiry = this.setTimer(() => {
+        this.broadcastToOthers(room, session.userId, {
+          type: "chat.typing_stop",
+        });
+      }, TYPING_EXPIRY_MS);
+    }
+  }
+
+  submitGuess(
+    session: Session,
+    rawGuess: unknown,
+    clientGuessId?: string,
+  ): SettlementView | null {
+    const room = this.requireAuthorizedRoom(session);
+    if (this.now() < room.createdAt + GUESS_UNLOCK_MS) {
+      throw new AppError(
+        "GUESS_LOCKED",
+        "对局开始 20 秒后才能提交判断。",
+      );
+    }
+    if (rawGuess !== "human" && rawGuess !== "ai") {
+      throw new AppError("INVALID_GUESS", "判断必须是 human 或 ai。");
+    }
+    const participant = this.participantFor(room, session.userId);
+    if (participant.guess) {
+      if (
+        clientGuessId &&
+        participant.guessClientId === clientGuessId &&
+        participant.guess === rawGuess
+      ) {
+        this.send(session, {
+          type: "guess.accepted",
+          targetGuess: participant.guess,
+        });
+        return null;
+      }
+      throw new AppError("GUESS_ALREADY_LOCKED", "你的判断已经锁定。");
+    }
+    participant.guess = rawGuess;
+    participant.guessClientId = clientGuessId;
+    this.persistGuess(room, participant);
+    this.send(session, {
+      type: "guess.accepted",
+      targetGuess: rawGuess,
+    });
+
+    if (room.opponentType === "ai") {
+      return this.settle(room, "player_guessed")[0]?.view ?? null;
+    }
+    if (room.participants.every((candidate) => candidate.guess !== null)) {
+      const results = this.settle(room, "all_guessed");
+      return (
+        results.find((result) => result.userId === session.userId)?.view ?? null
+      );
+    }
+    return null;
+  }
+
+  async createReport(
+    session: Session,
+    rawReason: unknown,
+  ): Promise<ReportRecord> {
+    const room = this.requireOwnedRoom(session);
+    const reason = validateReportReason(rawReason);
+    const reportedParticipant = room.participants.find(
+      (participant) => participant.session.userId !== session.userId,
+    );
+    const report: ReportRecord = {
+      id: randomUUID(),
+      reporterId: session.userId,
+      roomId: room.id,
+      reportedUserId:
+        reportedParticipant?.session.userId ?? `ai:${room.id}`,
+      reportedParticipantId:
+        reportedParticipant?.databaseParticipantId ??
+        room.aiDatabaseParticipantId,
+      reason,
+      createdAt: this.now(),
+      evidence: {
+        opponentType: room.opponentType,
+        messages: room.messages.slice(-50).map((message) => ({ ...message })),
+      },
+    };
+    if (this.reportRepository) {
+      await room.persistenceChain;
+      await this.reportRepository.create({
+        id: report.id,
+        gameId: room.id,
+        reporterUserId: session.databaseUserId,
+        reportedParticipantId: report.reportedParticipantId,
+        reason: report.reason,
+        evidence: {
+          opponentType: room.opponentType,
+          messageIds: report.evidence.messages.map((message) => message.id),
+          snapshot: report.evidence.messages.map((message) => ({
+            id: message.id,
+            sender:
+              message.senderId === session.userId ? "self" : "opponent",
+            text: message.text,
+            at: message.at,
+            sequence: message.sequence,
+          })),
+        },
+      });
+    }
+    this.reports.set(report.id, report);
+    return report;
+  }
+
+  leaveGame(session: Session): void {
+    const room = this.requireOwnedRoom(session);
+    if (room.status !== "active") {
+      return;
+    }
+    this.broadcastToOthers(room, session.userId, {
+      type: "game.disconnected",
+      message: "对方已离开本局。",
+    });
+    this.settle(room, "disconnect");
+  }
+
+  async resumeRoom(session: Session, lastSequence: number): Promise<void> {
+    const room = this.requireOwnedRoom(session);
+    if (this.roomStore) {
+      await room.persistenceChain;
+      const bundle = await this.roomStore.getResumeBundle(
+        room.id,
+        lastSequence,
+      );
+      if (bundle) {
+        this.send(session, {
+          type: "game.snapshot",
+          gameId: room.id,
+          status: bundle.snapshot.status,
+          lastSequence: bundle.snapshot.lastSequence,
+          messages: bundle.messages.map((message) => ({
+            id: message.id,
+            sender:
+              message.senderId === session.userId ? "self" : "opponent",
+            content: message.text,
+            sequence: message.sequence,
+            createdAt: message.at,
+            moderated: message.metadata?.moderated === true,
+          })),
+        });
+        return;
+      }
+    }
+    const messages = room.messages
+      .filter((message) => message.sequence > lastSequence)
+      .map((message) => {
+        const view = this.messageFor(message, session.userId);
+        return {
+          id: view.id,
+          sender: view.sender,
+          content: view.text,
+          sequence: view.sequence,
+          createdAt: view.at,
+        };
+      });
+    this.send(session, {
+      type: "game.snapshot",
+      gameId: room.id,
+      status: room.status,
+      lastSequence: room.messages.at(-1)?.sequence ?? 0,
+      messages,
+    });
+  }
+
+  getMetrics(): MatchMetrics {
+    const aiGames = this.recentMatchTypes.filter(
+      (type) => type === "ai",
+    ).length;
+    const aiRatio = this.recentMatchTypes.length
+      ? aiGames / this.recentMatchTypes.length
+      : 0;
+    return {
+      recentGames: this.recentMatchTypes.length,
+      aiGames,
+      aiRatio,
+      target: AI_RATIO_TARGET,
+      aboveTarget: aiRatio > AI_RATIO_TARGET,
+    };
+  }
+
+  shutdown(): void {
+    this.stopping = true;
+    for (const queued of this.queue) {
+      if (queued.gateTimer) this.clearTimer(queued.gateTimer);
+    }
+    this.queue.length = 0;
+    for (const room of this.rooms.values()) {
+      this.cancelAi(room);
+      if (room.expiryTimer) this.clearTimer(room.expiryTimer);
+      for (const participant of room.participants) {
+        if (participant.disconnectTimer) {
+          this.clearTimer(participant.disconnectTimer);
+        }
+        if (participant.typingExpiry) {
+          this.clearTimer(participant.typingExpiry);
+        }
+      }
+    }
+  }
+
+  private tryReserveHumans(): void {
+    const available = this.queue.filter((queued) => !queued.reserved);
+    while (available.length >= 2) {
+      const first = available.shift();
+      const second = available.shift();
+      if (!first || !second) {
+        break;
+      }
+      first.reserved = true;
+      second.reserved = true;
+      if (first.gateTimer) this.clearTimer(first.gateTimer);
+      if (second.gateTimer) this.clearTimer(second.gateTimer);
+      const startAt = Math.max(
+        first.joinedAt + ENTRY_GATE_MS,
+        second.joinedAt + ENTRY_GATE_MS,
+      );
+      first.gateTimer = this.setTimer(
+        () => this.startHumanRoom(first, second),
+        Math.max(0, startAt - this.now()),
+      );
+    }
+  }
+
+  private fillWithAiIfStillWaiting(queued: QueuedPlayer): void {
+    if (!this.queue.includes(queued) || queued.reserved) {
+      return;
+    }
+    const human = this.queue.find(
+      (candidate) =>
+        candidate !== queued &&
+        !candidate.reserved &&
+        Boolean(candidate.session.socket),
+    );
+    if (human) {
+      queued.reserved = true;
+      human.reserved = true;
+      const startAt = Math.max(
+        queued.joinedAt + ENTRY_GATE_MS,
+        human.joinedAt + ENTRY_GATE_MS,
+      );
+      this.setTimer(
+        () => this.startHumanRoom(queued, human),
+        Math.max(0, startAt - this.now()),
+      );
+      return;
+    }
+    if (!this.aiBudget) {
+      queued.reserved = true;
+      this.removeQueued(queued);
+      this.startRoom([queued], "ai");
+      return;
+    }
+    queued.reserved = true;
+    void this.aiBudget
+      .reserveAiGame()
+      .then((decision) => {
+        if (!this.queue.includes(queued)) return;
+        if (decision.allowed) {
+          this.removeQueued(queued);
+          this.startRoom([queued], "ai");
+          return;
+        }
+        queued.reserved = false;
+        queued.joinedAt = this.now();
+        this.send(queued.session, {
+          type: "match.queued",
+          gateEndsAt: queued.joinedAt + ENTRY_GATE_MS,
+        });
+        this.tryReserveHumans();
+        if (!queued.reserved) {
+          queued.gateTimer = this.setTimer(
+            () => this.fillWithAiIfStillWaiting(queued),
+            ENTRY_GATE_MS,
+          );
+        }
+      })
+      .catch((error) => {
+        queued.reserved = false;
+        this.onPersistenceError?.(error, "reserve_ai_budget");
+        if (this.queue.includes(queued)) {
+          queued.gateTimer = this.setTimer(
+            () => this.fillWithAiIfStillWaiting(queued),
+            ENTRY_GATE_MS,
+          );
+        }
+      });
+  }
+
+  private startHumanRoom(
+    first: QueuedPlayer,
+    second: QueuedPlayer,
+  ): void {
+    if (!this.queue.includes(first) || !this.queue.includes(second)) {
+      return;
+    }
+    if (!first.session.socket || !second.session.socket) {
+      first.reserved = false;
+      second.reserved = false;
+      this.tryReserveHumans();
+      return;
+    }
+    this.removeQueued(first);
+    this.removeQueued(second);
+    this.startRoom([first, second], "human");
+  }
+
+  private removeQueued(queued: QueuedPlayer): void {
+    const index = this.queue.indexOf(queued);
+    if (index >= 0) {
+      this.queue.splice(index, 1);
+    }
+    if (queued.gateTimer) {
+      this.clearTimer(queued.gateTimer);
+    }
+  }
+
+  private startRoom(
+    queuedPlayers: QueuedPlayer[],
+    opponentType: "human" | "ai",
+  ): Room {
+    const createdAt = this.now();
+    const room: Room = {
+      id: randomUUID(),
+      status: "active",
+      opponentType,
+      participants: queuedPlayers.map(({ session, joinedAt }) => ({
+        session,
+        joinedQueueAt: joinedAt,
+        guess: null,
+        messageCount: 0,
+        connected: true,
+        lastTypingAt: 0,
+      })),
+      createdAt,
+      expiresAt: createdAt + ROOM_DURATION_MS,
+      messages: [],
+      aiReplyCount: 0,
+    };
+    this.rooms.set(room.id, room);
+    const initialization = this.initializeRoom(room);
+    if (initialization) {
+      room.persistenceChain = initialization.catch((error) => {
+        room.persistenceFailed = true;
+        this.onPersistenceError?.(error, "initialize_room");
+      });
+      void initialization
+        .then(() => this.activateRoom(room))
+        .catch(() => {
+          room.status = "settled";
+          for (const participant of room.participants) {
+            this.send(participant.session, {
+              type: "game.error",
+              code: "ROOM_PERSISTENCE_FAILED",
+              message: "对局初始化失败，请重新匹配。",
+            });
+          }
+        });
+      return room;
+    }
+    this.activateRoom(room);
+    return room;
+  }
+
+  private activateRoom(room: Room): void {
+    for (const participant of room.participants) {
+      participant.session.roomId = room.id;
+      this.send(participant.session, {
+        type: "match.found",
+        gameId: room.id,
+        startedAt: room.createdAt,
+        endsAt: room.expiresAt,
+        minGuessAt: room.createdAt + GUESS_UNLOCK_MS,
+        opponentLabel: `匿名玩家 / ${room.id.slice(0, 2).toUpperCase()}`,
+      });
+    }
+    this.recordMatch(room.opponentType);
+    if (room.opponentType === "human") {
+      void this.aiBudget?.recordHumanGame().catch((error) => {
+        this.onPersistenceError?.(error, "record_human_ai_budget");
+      });
+    }
+    room.expiryTimer = this.setTimer(
+      () => this.settle(room, "timeout"),
+      ROOM_DURATION_MS,
+    );
+  }
+
+  private initializeRoom(room: Room): Promise<void> | null {
+    if (!this.gameRepository && !this.roomStore) {
+      return null;
+    }
+    return (async () => {
+      if (this.gameRepository) {
+        await this.gameRepository.createGame({
+          id: room.id,
+          status: "active",
+          matchType: room.opponentType,
+          rulesetVersion: "alpha-2026-07-24.1",
+          aiModel:
+            room.opponentType === "ai" ? "deepseek-v4-flash" : null,
+          aiProfileVersion:
+            room.opponentType === "ai" ? "alpha-chat-v1" : null,
+          startedAt: new Date(room.createdAt),
+          endsAt: new Date(room.expiresAt),
+        });
+        for (const [seat, participant] of room.participants.entries()) {
+          if (!participant.session.databaseUserId) {
+            throw new Error("真人参与者缺少数据库用户标识。");
+          }
+          const row = await this.gameRepository.addParticipant({
+            gameId: room.id,
+            userId: participant.session.databaseUserId,
+            identityType: "human",
+            seat,
+            joinedQueueAt: new Date(participant.joinedQueueAt),
+          });
+          participant.databaseParticipantId = row.id;
+        }
+        if (room.opponentType === "ai") {
+          const aiParticipant = await this.gameRepository.addParticipant({
+            gameId: room.id,
+            userId: null,
+            identityType: "ai",
+            seat: 1,
+            joinedQueueAt: new Date(room.createdAt),
+          });
+          room.aiDatabaseParticipantId = aiParticipant.id;
+        }
+      }
+      if (this.roomStore) {
+        await this.roomStore.saveSnapshot({
+          roomId: room.id,
+          status: room.status,
+          participantIds: room.participants.map(
+            (participant) => participant.session.userId,
+          ),
+          opponentType: room.opponentType,
+          createdAt: room.createdAt,
+          expiresAt: room.expiresAt,
+        });
+      }
+    })();
+  }
+
+  private persistMessage(room: Room, message: ChatMessage): void {
+    if (!this.gameRepository && !this.roomStore) return;
+    this.enqueuePersistence(room, "append_message", async () => {
+      if (this.gameRepository) {
+        const participant =
+          message.senderId === "ai"
+            ? undefined
+            : this.participantFor(room, message.senderId);
+        await this.gameRepository.appendMessage({
+          id: message.id,
+          gameId: room.id,
+          senderParticipantId:
+            message.senderId === "ai"
+              ? room.aiDatabaseParticipantId
+              : participant?.databaseParticipantId,
+          senderType: message.senderId === "ai" ? "ai" : "human",
+          content: message.text,
+          clientMessageId: message.clientMessageId,
+          serverSequence: message.sequence,
+          moderated: message.moderated ?? false,
+          createdAt: new Date(message.at),
+        });
+      }
+      if (this.roomStore) {
+        const stored = await this.roomStore.appendMessage(room.id, {
+          id: message.id,
+          senderId: message.senderId,
+          text: message.text,
+          at: message.at,
+          metadata: {
+            moderated: message.moderated ?? false,
+            clientMessageId: message.clientMessageId,
+          },
+        });
+        if (stored.sequence !== message.sequence) {
+          throw new Error("房间消息序号与持久化序号不一致。");
+        }
+      }
+    });
+  }
+
+  private persistGuess(room: Room, participant: Participant): void {
+    if (!this.gameRepository || !participant.guess) return;
+    this.enqueuePersistence(room, "submit_guess", async () => {
+      if (!participant.databaseParticipantId) {
+        throw new Error("参与者缺少数据库标识，无法保存判断。");
+      }
+      await this.gameRepository?.submitGuess({
+        gameId: room.id,
+        participantId: participant.databaseParticipantId,
+        targetGuess: participant.guess as Guess,
+        submittedAt: new Date(this.now()),
+      });
+    });
+  }
+
+  private enqueuePersistence(
+    room: Room,
+    operation: string,
+    task: () => Promise<void>,
+  ): Promise<void> {
+    const next = (room.persistenceChain ?? Promise.resolve()).then(task);
+    room.persistenceChain = next.catch((error) => {
+      room.persistenceFailed = true;
+      this.onPersistenceError?.(error, operation);
+    });
+    return next;
+  }
+
+  private scheduleAiReply(room: Room): void {
+    if (room.aiReplyCount >= 10) {
+      return;
+    }
+    this.cancelAi(room);
+    room.aiReplyCount += 1;
+    room.aiAbort = new AbortController();
+    const controller = room.aiAbort;
+    room.aiDelayTimer = this.setTimer(async () => {
+      if (room.status !== "active" || controller.signal.aborted) {
+        return;
+      }
+      const participant = room.participants[0];
+      if (participant) {
+        this.send(participant.session, {
+          type: "chat.typing_start",
+          status: "正在组织语言…",
+        });
+      }
+      const reservationId = randomUUID();
+      let usageReserved = false;
+      let usageOutcome: AiSettlementOutcome = "failed";
+      let completionTokens = 0;
+      try {
+        if (this.aiUsageBudget) {
+          const decision = await this.aiUsageBudget.reserve({
+            reservationId,
+            identity: {
+              roomId: room.id,
+              userId: participant?.session.userId ?? `room:${room.id}`,
+              deviceId:
+                participant?.session.deviceId ?? `room:${room.id}:device`,
+              ip: participant?.session.ipHash ?? `room:${room.id}:ip`,
+            },
+            estimatedTokens: AI_USAGE_ESTIMATED_TOKENS,
+            now: this.now(),
+          } satisfies AiReserveRequest);
+          if (!decision.allowed) {
+            throw new AppError(
+              "AI_USAGE_LIMIT",
+              "AI 当前达到使用上限，请稍后重试。",
+              429,
+            );
+          }
+          usageReserved = true;
+        }
+        if (room.status !== "active" || controller.signal.aborted) {
+          usageOutcome = "cancelled";
+          return;
+        }
+        const rawReply = await this.aiReply({
+          messages: room.messages,
+          signal: controller.signal,
+        });
+        if (room.status !== "active" || controller.signal.aborted) {
+          usageOutcome = "cancelled";
+          return;
+        }
+        completionTokens = Math.min(
+          AI_USAGE_MAX_COMPLETION_TOKENS,
+          Math.max(1, [...rawReply].length * 2),
+        );
+        usageOutcome = "success";
+        const moderation = this.moderation.evaluate({
+          text: rawReply,
+          surface: "AI_OUTPUT",
+          audit: { actorId: "deepseek-v4-flash" },
+        });
+        const safeReply =
+          moderation.action === "ALLOW" ||
+          moderation.action === "REDACT"
+            ? moderation.text
+            : moderateAiOutput(rawReply);
+        const message: ChatMessage = {
+          id: randomUUID(),
+          senderId: "ai",
+          sender: "opponent",
+          text: safeReply,
+          at: this.now(),
+          sequence: room.messages.length + 1,
+          moderated: moderation.action !== "ALLOW",
+        };
+        room.messages.push(message);
+        this.persistMessage(room, message);
+        this.broadcastMessage(room, message, false);
+      } catch (error) {
+        usageOutcome =
+          controller.signal.aborted || room.status !== "active"
+            ? "cancelled"
+            : "failed";
+        if (!controller.signal.aborted && room.status === "active") {
+          const current = room.participants[0];
+          if (current) {
+            this.send(current.session, {
+              type: "game.error",
+              code: "AI_UNAVAILABLE",
+              message: "对方暂时没有回应，你可以继续等待或提交判断。",
+            });
+          }
+        }
+      } finally {
+        if (usageReserved && this.aiUsageBudget) {
+          const conservativeTokens =
+            usageOutcome === "success"
+              ? {
+                  promptTokens: AI_USAGE_ESTIMATED_PROMPT_TOKENS,
+                  completionTokens,
+                }
+              : {
+                  promptTokens: AI_USAGE_ESTIMATED_TOKENS,
+                  completionTokens: 0,
+                };
+          try {
+            await this.aiUsageBudget.settle({
+              reservationId,
+              outcome: usageOutcome,
+              ...conservativeTokens,
+              now: this.now(),
+            } satisfies AiSettleRequest);
+          } catch (error) {
+            this.onPersistenceError?.(error, "settle_ai_usage_budget");
+          }
+        }
+        if (room.status === "active") {
+          const current = room.participants[0];
+          if (current) {
+            this.send(current.session, {
+              type: "chat.typing_stop",
+            });
+          }
+        }
+      }
+    }, 500 + Math.floor(this.random() * 1_000));
+  }
+
+  private cancelAi(room: Room): void {
+    if (room.aiDelayTimer) {
+      this.clearTimer(room.aiDelayTimer);
+      room.aiDelayTimer = undefined;
+    }
+    room.aiAbort?.abort();
+    room.aiAbort = undefined;
+  }
+
+  private settle(
+    room: Room,
+    reason: SettlementView["reason"],
+  ): Array<{ userId: string; view: SettlementView }> {
+    if (room.status === "settled") {
+      return [];
+    }
+    room.status = "settled";
+    this.cancelAi(room);
+    if (room.expiryTimer) {
+      this.clearTimer(room.expiryTimer);
+      room.expiryTimer = undefined;
+    }
+    const results = room.participants.map((participant) => {
+      const opponentType: "human" | "ai" =
+        room.opponentType === "ai" ? "ai" : "human";
+      const view: SettlementView = {
+        roomId: room.id,
+        reason,
+        opponentType,
+        yourGuess: participant.guess,
+        correct:
+          participant.guess === null
+            ? null
+            : participant.guess === opponentType,
+        durationMs: Math.max(0, this.now() - room.createdAt),
+      };
+      return {
+        userId: participant.session.userId,
+        participant,
+        view,
+      };
+    });
+    if (this.gameRepository) {
+      void this.enqueuePersistence(room, "settle_game", async () => {
+        if (room.persistenceFailed) {
+          throw new Error("此前持久化操作失败，禁止发布结算结果。");
+        }
+        await this.gameRepository?.settleGame({
+          gameId: room.id,
+          reason,
+          settledAt: new Date(this.now()),
+          participants: results.map(({ participant, view }) => {
+            if (!participant.databaseParticipantId) {
+              throw new Error("参与者缺少数据库标识，无法结算。");
+            }
+            return {
+              settlementId: randomUUID(),
+              participantId: participant.databaseParticipantId,
+              userId: participant.session.databaseUserId,
+              opponentType: view.opponentType,
+              playerGuess: view.yourGuess,
+              correct: view.correct,
+              outcome:
+                view.correct === null
+                  ? "draw"
+                  : view.correct
+                    ? "won"
+                    : "lost",
+              scoreDelta: view.correct ? 10 : 0,
+              durationMs: view.durationMs,
+            };
+          }),
+        });
+      })
+        .then(() => this.publishSettlement(results))
+        .catch(() => {
+          for (const { participant } of results) {
+            this.send(participant.session, {
+              type: "game.error",
+              code: "SETTLEMENT_PERSISTENCE_FAILED",
+              message: "结算暂时失败，结果尚未计入，请稍后重试。",
+            });
+          }
+        });
+    } else {
+      this.publishSettlement(results);
+    }
+    if (this.roomStore) {
+      void this.roomStore
+        .saveSnapshot({
+          roomId: room.id,
+          status: room.status,
+          participantIds: room.participants.map(
+            (participant) => participant.session.userId,
+          ),
+          opponentType: room.opponentType,
+          createdAt: room.createdAt,
+          expiresAt: room.expiresAt,
+          lastSequence: room.messages.at(-1)?.sequence ?? 0,
+        })
+        .catch((error) => {
+          this.onPersistenceError?.(error, "settle_room_snapshot");
+        });
+    }
+    return results.map(({ userId, view }) => ({ userId, view }));
+  }
+
+  private publishSettlement(
+    results: Array<{
+      participant: Participant;
+      view: SettlementView;
+    }>,
+  ): void {
+    for (const { participant, view } of results) {
+      this.send(participant.session, {
+        type: "game.finished",
+        opponentType: view.opponentType,
+        guess: view.yourGuess,
+        isCorrect: view.correct === true,
+        outcome:
+          view.correct === null ? "draw" : view.correct ? "won" : "lost",
+        stats: {
+          durationSeconds: Math.round(view.durationMs / 1_000),
+          messageCount: participant.messageCount,
+          streak: view.correct ? 1 : 0,
+          scoreDelta: view.correct ? 10 : 0,
+        },
+      });
+    }
+  }
+
+  private participantFor(room: Room, userId: string): Participant {
+    const participant = room.participants.find(
+      (candidate) => candidate.session.userId === userId,
+    );
+    if (!participant) {
+      throw new AppError(
+        "ROOM_FORBIDDEN",
+        "你无权访问这个对局。",
+        403,
+      );
+    }
+    return participant;
+  }
+
+  private requireAuthorizedRoom(session: Session): Room {
+    const room = this.requireOwnedRoom(session);
+    if (room.status !== "active") {
+      throw new AppError("ROOM_ENDED", "本局已经结束。");
+    }
+    return room;
+  }
+
+  private requireOwnedRoom(session: Session): Room {
+    if (!session.roomId) {
+      throw new AppError("ROOM_NOT_FOUND", "当前没有可用对局。", 404);
+    }
+    const room = this.rooms.get(session.roomId);
+    if (!room) {
+      throw new AppError("ROOM_NOT_FOUND", "对局不存在。", 404);
+    }
+    this.participantFor(room, session.userId);
+    return room;
+  }
+
+  private broadcastMessage(
+    room: Room,
+    message: ChatMessage,
+    replaced: boolean,
+  ): void {
+    for (const participant of room.participants) {
+      this.sendChatMessage(
+        participant.session,
+        message,
+        replaced && message.senderId === participant.session.userId,
+      );
+    }
+  }
+
+  private sendChatMessage(
+    session: Session,
+    message: ChatMessage,
+    moderated: boolean,
+  ): void {
+    const view = this.messageFor(message, session.userId);
+    this.send(session, {
+      type: "chat.message",
+      id: view.id,
+      sender: view.sender,
+      content: view.text,
+      sequence: view.sequence,
+      createdAt: view.at,
+      moderated,
+    });
+  }
+
+  private messageFor(message: ChatMessage, userId: string): ChatMessage {
+    return {
+      ...message,
+      sender: message.senderId === userId ? "self" : "opponent",
+    };
+  }
+
+  private broadcastToOthers(
+    room: Room,
+    userId: string,
+    envelope: WsEnvelope,
+  ): void {
+    for (const participant of room.participants) {
+      if (participant.session.userId !== userId) {
+        this.send(participant.session, envelope);
+      }
+    }
+  }
+
+  private send(session: Session, envelope: WsEnvelope): void {
+    const socket = session.socket;
+    if (socket && socket.readyState === socket.OPEN) {
+      socket.send(JSON.stringify(envelope));
+    }
+  }
+
+  private recordMatch(type: "human" | "ai"): void {
+    this.recentMatchTypes.push(type);
+    if (this.recentMatchTypes.length > 100) {
+      this.recentMatchTypes.shift();
+    }
+    this.onMetric?.(this.getMetrics());
+  }
+}

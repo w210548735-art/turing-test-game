@@ -1,0 +1,27 @@
+import { z } from "zod";
+
+export const appErrorCodeSchema = z.enum([
+  "INVALID_EVENT",
+  "INVALID_PAYLOAD",
+  "PAYLOAD_TOO_LARGE",
+  "UNAUTHORIZED",
+  "ORIGIN_FORBIDDEN",
+  "RATE_LIMITED",
+  "ALREADY_QUEUED",
+  "ALREADY_IN_ROOM",
+  "ROOM_NOT_FOUND",
+  "ROOM_FORBIDDEN",
+  "ROOM_ENDED",
+  "GUESS_LOCKED",
+  "GUESS_ALREADY_LOCKED",
+  "MESSAGE_TOO_LONG",
+  "MESSAGE_LIMIT_REACHED",
+  "CONTENT_BLOCKED",
+  "BANNED",
+  "TICKET_INVALID",
+  "TICKET_CONSUMED",
+  "AI_UNAVAILABLE",
+  "INTERNAL_ERROR",
+]);
+
+export type AppErrorCode = z.infer<typeof appErrorCodeSchema>;

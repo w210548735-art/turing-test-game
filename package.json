@@ -1,0 +1,20 @@
+{
+  "name": "turing-gate-demo",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/web",
+    "apps/server",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run build --workspace packages/protocol && concurrently -n SERVER,WEB -c magenta,green \"npm run dev --workspace apps/server\" \"npm run dev --workspace apps/web\"",
+    "dev:account": "npm run build --workspace packages/protocol && concurrently -n SERVER,WEB -c magenta,green \"node --env-file=.env.qq-smtp.local node_modules/tsx/dist/cli.mjs watch apps/server/src/index.ts\" \"npm run dev --workspace apps/web\"",
+    "build": "npm run build --workspace packages/protocol && npm run build --workspace apps/server && npm run build --workspace apps/web",
+    "test": "npm run test --workspace packages/protocol && npm run test --workspace apps/server && npm run test --workspace apps/web",
+    "typecheck": "npm run build --workspace packages/protocol && npm run typecheck --workspace apps/server && npm run typecheck --workspace apps/web"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

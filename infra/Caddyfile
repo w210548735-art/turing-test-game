@@ -1,0 +1,41 @@
+{
+	admin off
+	email {$ACME_EMAIL:}
+}
+
+http://127.0.0.1 {
+	@health path /healthz
+	respond @health "ok" 200
+}
+
+{$SITE_ADDRESS:http://localhost} {
+	encode zstd gzip
+
+	@health path /healthz
+	respond @health "ok" 200
+
+	@backend path /api/* /ws
+	reverse_proxy @backend server:8787 {
+		health_uri /api/ready
+		health_interval 15s
+		health_timeout 3s
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+
+	root * /srv
+	try_files {path} /index.html
+	file_server
+
+	log {
+		output stdout
+		format json
+	}
+}

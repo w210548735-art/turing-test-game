@@ -1,0 +1,36 @@
+{
+  "name": "@turing-game/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/src/index.js",
+    "db:migrate": "node dist/src/db/migrate.js",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test tests/**/*.test.ts"
+  },
+  "dependencies": {
+    "@turing-game/protocol": "*",
+    "argon2": "^0.45.1",
+    "drizzle-orm": "^0.45.2",
+    "fastify": "^5.6.2",
+    "ioredis": "^5.11.1",
+    "nodemailer": "^9.0.3",
+    "postgres": "^3.4.9",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.4",
+    "@types/node": "^24.10.1",
+    "@types/nodemailer": "^8.0.1",
+    "@types/ws": "^8.18.1",
+    "drizzle-kit": "^0.31.10",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
