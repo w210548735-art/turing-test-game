@@ -47,3 +47,19 @@ npm run build
 受控部署使用 `infra/docker-compose.yml`：Caddy 提供 HTTPS/WSS，PostgreSQL 保存对局与审核数据，Redis 保存一次性 WebSocket 票据、AI 配额和断线补发状态。数据库迁移成功后服务才会启动，`/api/ready` 会同时检查 PostgreSQL、Redis 和 DeepSeek 配置。
 
 当前匹配队列和连接路由仍按单个 server 实例设计；可用于小规模受邀测试，不能在未完成跨实例路由前直接水平扩容。部署步骤与上线前必填项见 [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md)、[docs/PRIVACY.md](./docs/PRIVACY.md) 和 [docs/TERMS.md](./docs/TERMS.md)。
+
+### Windows 本机 DNS 故障
+
+若 Meta Tunnel 等代理把 `203-0-113-10.sslip.io` 解析到 `28.0.0.0/8`
+虚拟地址并出现 `ERR_CONNECTION_CLOSED`，请在管理员 PowerShell 中运行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\fix-local-test-dns.ps1
+```
+
+脚本只管理一条带标记的 hosts 记录，修改前会生成备份，并拒绝覆盖已有的
+非托管同名记录。测试结束后可精确撤销：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\fix-local-test-dns.ps1 -Remove
+```
