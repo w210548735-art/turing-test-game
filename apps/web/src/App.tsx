@@ -39,6 +39,12 @@ const THINKING_SUGGESTIONS = [
   "正在努力像个人类…",
 ];
 
+const OPENING_QUESTIONS = [
+  "你最近一次改变看法，是因为什么？",
+  "如果只能保留一种感官，你会选什么？",
+  "描述一件你明知没必要却仍会做的事。",
+];
+
 type AuthMode = "login" | "register" | "forgot" | "reset" | "verify";
 
 interface InitialAuthRoute {
@@ -82,6 +88,24 @@ function createMessageId(): string {
     globalThis.crypto?.randomUUID?.() ??
     `message-${Date.now()}-${Math.random().toString(16).slice(2)}`
   );
+}
+
+function useEscapeToClose(onClose: () => void): void {
+  useEffect(() => {
+    const previouslyFocused = document.activeElement;
+    function handleEscape(event: globalThis.KeyboardEvent) {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    }
+    window.addEventListener("keydown", handleEscape);
+    return () => {
+      window.removeEventListener("keydown", handleEscape);
+      if (previouslyFocused instanceof HTMLElement) {
+        previouslyFocused.focus();
+      }
+    };
+  }, [onClose]);
 }
 
 export default function App() {
@@ -1184,6 +1208,15 @@ function Onboarding({
           {accountEmail && <span className="signed-in-as">{accountEmail}</span>}
         </div>
 
+        <div className="identity-preview" aria-label="公开身份预览">
+          <div>
+            <span className="presence-mark" />
+            <small>IDENTITY PREVIEW / 07</small>
+          </div>
+          <strong>{nickname.trim() || "未命名观察者"}</strong>
+          <p>{thinkingStatus.trim() || "正在等待一个念头…"}</p>
+        </div>
+
         <label className="field">
           <span>昵称 / NICKNAME</span>
           <input
@@ -1238,12 +1271,13 @@ function Onboarding({
             <span aria-hidden="true">↗</span>
           </button>
           <button
-            className="text-action"
+            className="demo-action"
             type="button"
             disabled={isStarting}
             onClick={onDemo}
           >
-            本地演示
+            <span>本地演示</span>
+            <small>无需账户 · 约 5 分钟</small>
           </button>
         </div>
 
@@ -1274,6 +1308,16 @@ function Matching({
   onCancel,
   onDemo,
 }: MatchingProps) {
+  const progressPercent = Math.round(progress * 100);
+  const connectionStage =
+    progressPercent < 25
+      ? "建立安全通道"
+      : progressPercent < 55
+        ? "同步匿名身份"
+        : progressPercent < 90
+          ? "等待对象确认"
+          : "锁定对话房间";
+
   return (
     <section className="matching-screen">
       <div className="matching-meta">
@@ -1297,17 +1341,30 @@ function Matching({
       </div>
       <div className="calibration">
         <div className="calibration-label">
-          <span>正在连接房间</span>
-          <span>{Math.round(progress * 100)}%</span>
+          <span>{connectionStage}</span>
+          <span>{progressPercent}%</span>
         </div>
         <div
           className="progress-track"
           role="progressbar"
           aria-valuemin={0}
           aria-valuemax={100}
-          aria-valuenow={Math.round(progress * 100)}
+          aria-valuenow={progressPercent}
         >
           <div style={{ transform: `scaleX(${progress})` }} />
+        </div>
+        <div className="connection-steps" aria-hidden="true">
+          {["安全通道", "匿名身份", "对象确认", "房间锁定"].map(
+            (label, index) => (
+              <span
+                key={label}
+                className={progressPercent >= index * 25 ? "is-active" : ""}
+              >
+                <i>{String(index + 1).padStart(2, "0")}</i>
+                {label}
+              </span>
+            ),
+          )}
         </div>
       </div>
       <div className="matching-actions">
@@ -1401,11 +1458,22 @@ function ChatRoom({
             disabled={!guessReady || Boolean(guessSubmitted)}
             onClick={onGuess}
           >
-            {guessSubmitted
-              ? "判断已锁定"
-              : guessReady
-                ? "作出判断 ↗"
-                : `${Math.ceil(guessRemaining / 1_000)} 秒后可判断`}
+            {!guessSubmitted && (
+              <span
+                className="guess-progress"
+                style={{
+                  transform: `scaleX(${guessReady ? 1 : Math.max(0, 1 - guessRemaining / 20_000)})`,
+                }}
+                aria-hidden="true"
+              />
+            )}
+            <span>
+              {guessSubmitted
+                ? "判断已锁定"
+                : guessReady
+                  ? "作出判断 ↗"
+                  : `${Math.ceil(guessRemaining / 1_000)} 秒后可判断`}
+            </span>
           </button>
           <div>
             <button
@@ -1432,11 +1500,31 @@ function ChatRoom({
           <p>身份将在判断后揭晓</p>
         </header>
 
-        <div className="message-list" aria-live="polite" aria-label="对话消息">
+        <div
+          className="message-list"
+          role="log"
+          tabIndex={0}
+          aria-live="polite"
+          aria-label="对话消息，可上下滚动"
+        >
           {messages.length === 0 && (
             <div className="conversation-empty">
-              <span>NO SIGNAL YET</span>
-              <p>从一个不好敷衍的问题开始。</p>
+              <span className="empty-index">NO SIGNAL / START WITH A QUESTION</span>
+              <h2>别从“你好”开始。</h2>
+              <p>选择一个不容易被模板回答的问题，观察对方如何犹豫。</p>
+              <div className="opening-questions" aria-label="开场问题建议">
+                {OPENING_QUESTIONS.map((question, index) => (
+                  <button
+                    key={question}
+                    type="button"
+                    onClick={() => onMessageChange(question)}
+                  >
+                    <span>{String(index + 1).padStart(2, "0")}</span>
+                    {question}
+                    <i aria-hidden="true">↘</i>
+                  </button>
+                ))}
+              </div>
             </div>
           )}
           {messages.map((message) => (
@@ -1476,7 +1564,10 @@ function ChatRoom({
         </div>
 
         <form className="composer" onSubmit={onMessageSubmit}>
-          <label htmlFor="message">你的消息</label>
+          <div className="composer-heading">
+            <label htmlFor="message">你的消息</label>
+            <span>{guessSubmitted ? "CONVERSATION LOCKED" : "ENCRYPTED CHANNEL"}</span>
+          </div>
           <textarea
             id="message"
             value={messageDraft}
@@ -1525,10 +1616,20 @@ function GuessDialog({
   onClose,
   onSubmit,
 }: GuessDialogProps) {
+  useEscapeToClose(onClose);
+  const confidenceLabel =
+    confidence < 60 ? "仍在犹豫" : confidence < 80 ? "明显倾向" : "非常确信";
+
   return (
     <div className="modal-backdrop" role="presentation">
-      <dialog className="modal guess-modal" open aria-labelledby="guess-title">
+      <dialog
+        className="modal guess-modal"
+        open
+        aria-modal="true"
+        aria-labelledby="guess-title"
+      >
         <button
+          autoFocus
           className="modal-close"
           type="button"
           aria-label="关闭"
@@ -1568,7 +1669,10 @@ function GuessDialog({
           </div>
           <label className="confidence-field">
             <span>
-              你的把握 / CONFIDENCE <strong>{confidence}%</strong>
+              你的把握 / CONFIDENCE
+              <strong>
+                {confidenceLabel} · {confidence}%
+              </strong>
             </span>
             <input
               type="range"
@@ -1598,10 +1702,17 @@ function ReportDialog({
   onClose: () => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
+  useEscapeToClose(onClose);
   return (
     <div className="modal-backdrop" role="presentation">
-      <dialog className="modal report-modal" open aria-labelledby="report-title">
+      <dialog
+        className="modal report-modal"
+        open
+        aria-modal="true"
+        aria-labelledby="report-title"
+      >
         <button
+          autoFocus
           className="modal-close"
           type="button"
           aria-label="关闭"
@@ -1651,9 +1762,15 @@ function ConfirmDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  useEscapeToClose(onCancel);
   return (
     <div className="modal-backdrop" role="presentation">
-      <dialog className="modal confirm-modal" open aria-labelledby="leave-title">
+      <dialog
+        className="modal confirm-modal"
+        open
+        aria-modal="true"
+        aria-labelledby="leave-title"
+      >
         <p className="eyebrow">LEAVE ROOM</p>
         <h2 id="leave-title">确定离开本局？</h2>
         <p className="modal-lead">离开后无法返回，本局可能被记为中途退出。</p>
@@ -1661,7 +1778,12 @@ function ConfirmDialog({
           <button className="danger-action" type="button" onClick={onConfirm}>
             确认离开
           </button>
-          <button className="text-action" type="button" onClick={onCancel}>
+          <button
+            autoFocus
+            className="text-action"
+            type="button"
+            onClick={onCancel}
+          >
             继续对话
           </button>
         </div>
@@ -1690,6 +1812,7 @@ function ResultScreen({
         <span>{result.isCorrect ? "判断成立" : "判断偏差"}</span>
       </div>
       <div className="result-identity">
+        <p className="result-step">02 / 真实身份</p>
         <p>屏幕另一边是</p>
         <h1>{result.opponentType === "human" ? "真人" : "AI"}</h1>
         <span aria-hidden="true">
@@ -1701,6 +1824,7 @@ function ResultScreen({
           {result.isCorrect ? "✓" : "×"}
         </div>
         <div>
+          <p className="result-step">01 / 你的判断</p>
           <p>{nickname}，你判断对方是</p>
           <strong>
             {result.guess === null
