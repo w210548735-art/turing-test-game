@@ -83,7 +83,8 @@ describe("账户认证 HTTP 路由", () => {
     assert.equal(registration.statusCode, 202);
     assert.deepEqual(registration.json(), {
       accepted: true,
-      message: "如果该邮箱可以注册，我们会向其发送验证邮件。",
+      message:
+        "注册请求已提交。如果该邮箱可用于注册，你会收到验证邮件；请点击邮件中的激活链接后再返回登录。若暂未找到，请检查垃圾箱。",
     });
 
     const unverifiedLogin = await context.app.inject({

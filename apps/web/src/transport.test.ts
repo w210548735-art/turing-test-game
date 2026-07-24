@@ -41,22 +41,25 @@ describe("Cookie 会话传输", () => {
 
 describe("账户传输", () => {
   it("注册使用 Cookie 凭据且不发送 Authorization", async () => {
+    const activationMessage =
+      "注册请求已提交。如果该邮箱可用于注册，你会收到验证邮件；请点击邮件中的激活链接后再返回登录。若暂未找到，请检查垃圾箱。";
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
           accepted: true,
-          message: "如果地址可用，请查收验证邮件。",
+          message: activationMessage,
         }),
         { status: 202, headers: { "content-type": "application/json" } },
       ),
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    await registerAccount({
+    const result = await registerAccount({
       email: "member@example.com",
       password: "Correct-Horse-123",
     });
 
+    expect(result.message).toBe(activationMessage);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("/api/auth/register");
     expect(init.credentials).toBe("include");

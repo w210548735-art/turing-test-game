@@ -109,6 +109,9 @@ describe("AuthService 账户生命周期", () => {
       "Different!Pass-2026",
     );
     assert.deepEqual(duplicate, first);
+    assert.match(first.message, /收到验证邮件/);
+    assert.match(first.message, /点击邮件中的激活链接后再返回登录/);
+    assert.match(first.message, /检查垃圾箱/);
     assert.equal(fixture.outbox.messages.length, 1);
 
     const pending = await fixture.repository.findUserByCanonicalEmail(
