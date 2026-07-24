@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   bootstrapAccount,
+  DemoTransport,
   forgotAccountPassword,
   loginAccount,
   logoutAccount,
@@ -11,7 +12,36 @@ import {
 } from "./transport";
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
+});
+
+describe("本地演示匹配", () => {
+  it("依次经过寻找对手和五秒入场后才进入房间", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("window", globalThis);
+    const events: Array<{ type: string }> = [];
+    const transport = new DemoTransport({
+      onEvent: (event) => events.push(event),
+      onConnectionChange: () => undefined,
+    });
+
+    transport.send({ type: "match.join" });
+    expect(events.map((event) => event.type)).toEqual([
+      "match.searching",
+    ]);
+
+    vi.advanceTimersByTime(5_000);
+    expect(events.some((event) => event.type === "match.admission")).toBe(
+      true,
+    );
+    expect(events.some((event) => event.type === "match.found")).toBe(
+      false,
+    );
+
+    vi.advanceTimersByTime(5_000);
+    expect(events.at(-1)?.type).toBe("match.found");
+  });
 });
 
 describe("Cookie 会话传输", () => {

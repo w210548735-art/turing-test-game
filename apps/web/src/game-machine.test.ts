@@ -7,7 +7,7 @@ import {
 } from "./game-machine";
 
 describe("gameReducer", () => {
-  it("固定经过匹配屏后才进入聊天", () => {
+  it("固定经过容量排队、匹配和五秒入场后才进入聊天", () => {
     const profiled = gameReducer(initialState, {
       type: "PROFILE_SAVED",
       nickname: "观察者",
@@ -16,16 +16,30 @@ describe("gameReducer", () => {
     });
     const queued = gameReducer(profiled, {
       type: "MATCH_QUEUED",
-      gateEndsAt: 5_000,
+      position: 3,
+      queuedAt: 1_000,
     });
-    expect(queued.screen).toBe("matching");
+    expect(queued.screen).toBe("queue");
+    expect(queued.queuePosition).toBe(3);
 
-    const matched = gameReducer(queued, {
+    const searching = gameReducer(queued, {
+      type: "MATCH_SEARCHING",
+      searchStartedAt: 2_000,
+    });
+    expect(searching.screen).toBe("matching");
+
+    const admission = gameReducer(searching, {
+      type: "MATCH_ADMISSION",
+      gateEndsAt: 7_000,
+    });
+    expect(admission.screen).toBe("admission");
+
+    const matched = gameReducer(admission, {
       type: "MATCH_FOUND",
       gameId: "g-1",
-      startedAt: 5_000,
-      endsAt: 305_000,
-      minGuessAt: 25_000,
+      startedAt: 7_000,
+      endsAt: 307_000,
+      minGuessAt: 27_000,
       opponentLabel: "匿名玩家",
     });
     expect(matched.screen).toBe("chat");

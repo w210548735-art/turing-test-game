@@ -53,7 +53,11 @@ import {
   runRetentionJobs,
   type DatabaseState,
 } from "./db/index.js";
-import { GameService } from "./game.js";
+import {
+  DEFAULT_MAX_CONCURRENT_ROOMS,
+  DEFAULT_MAX_QUEUE_SIZE,
+  GameService,
+} from "./game.js";
 import {
   buildSecurityHeaders,
   createSecurityCookiePolicy,
@@ -108,6 +112,21 @@ function sha256(value: string): string {
 
 function getIp(request: FastifyRequest): string {
   return request.ip || request.socket.remoteAddress || "unknown";
+}
+
+function positiveIntegerEnvironment(
+  name: string,
+  fallback: number,
+): number {
+  const raw = process.env[name]?.trim();
+  if (!raw) {
+    return fallback;
+  }
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${name} 必须配置为正整数。`);
+  }
+  return parsed;
 }
 
 export interface ServerContext {
@@ -296,6 +315,14 @@ export async function buildServer(
     gameRepository,
     reportRepository: databaseReportRepository,
     moderation,
+    maxConcurrentRooms: positiveIntegerEnvironment(
+      "MATCH_MAX_CONCURRENT_ROOMS",
+      DEFAULT_MAX_CONCURRENT_ROOMS,
+    ),
+    maxQueueSize: positiveIntegerEnvironment(
+      "MATCH_MAX_QUEUE_SIZE",
+      DEFAULT_MAX_QUEUE_SIZE,
+    ),
     onMetric(metric) {
       app.log.info(
         {

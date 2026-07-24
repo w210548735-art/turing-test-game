@@ -1,4 +1,10 @@
-export type Screen = "onboarding" | "matching" | "chat" | "finished";
+export type Screen =
+  | "onboarding"
+  | "queue"
+  | "matching"
+  | "admission"
+  | "chat"
+  | "finished";
 export type ConnectionState =
   | "idle"
   | "connecting"
@@ -34,6 +40,9 @@ export interface GameState {
   nickname: string;
   thinkingStatus: string;
   demoMode: boolean;
+  queuePosition: number | null;
+  queuedAt: number | null;
+  searchStartedAt: number | null;
   gateEndsAt: number | null;
   matchProgress: number;
   gameId: string | null;
@@ -57,6 +66,9 @@ export const initialState: GameState = {
   nickname: "",
   thinkingStatus: "正在斟酌词句…",
   demoMode: false,
+  queuePosition: null,
+  queuedAt: null,
+  searchStartedAt: null,
   gateEndsAt: null,
   matchProgress: 0,
   gameId: null,
@@ -82,7 +94,9 @@ export type GameAction =
       demoMode: boolean;
     }
   | { type: "CONNECTION"; connection: ConnectionState }
-  | { type: "MATCH_QUEUED"; gateEndsAt: number }
+  | { type: "MATCH_QUEUED"; position: number; queuedAt: number }
+  | { type: "MATCH_SEARCHING"; searchStartedAt: number }
+  | { type: "MATCH_ADMISSION"; gateEndsAt: number }
   | { type: "MATCH_PROGRESS"; progress: number }
   | {
       type: "MATCH_FOUND";
@@ -122,7 +136,30 @@ export function gameReducer(
     case "MATCH_QUEUED":
       return {
         ...state,
+        screen: "queue",
+        queuePosition: action.position,
+        queuedAt: action.queuedAt,
+        searchStartedAt: null,
+        gateEndsAt: null,
+        matchProgress: 0,
+      };
+    case "MATCH_SEARCHING":
+      return {
+        ...state,
         screen: "matching",
+        queuePosition: null,
+        queuedAt: null,
+        searchStartedAt: action.searchStartedAt,
+        gateEndsAt: null,
+        matchProgress: 0,
+      };
+    case "MATCH_ADMISSION":
+      return {
+        ...state,
+        screen: "admission",
+        queuePosition: null,
+        queuedAt: null,
+        searchStartedAt: null,
         gateEndsAt: action.gateEndsAt,
         matchProgress: 0,
       };
@@ -140,6 +177,10 @@ export function gameReducer(
         endsAt: action.endsAt,
         minGuessAt: action.minGuessAt,
         opponentLabel: action.opponentLabel,
+        queuePosition: null,
+        queuedAt: null,
+        searchStartedAt: null,
+        gateEndsAt: null,
         matchProgress: 1,
         error: null,
       };

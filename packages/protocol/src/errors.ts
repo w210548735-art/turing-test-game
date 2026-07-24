@@ -9,6 +9,7 @@ export const appErrorCodeSchema = z.enum([
   "RATE_LIMITED",
   "ALREADY_QUEUED",
   "ALREADY_IN_ROOM",
+  "MATCH_QUEUE_FULL",
   "ROOM_NOT_FOUND",
   "ROOM_FORBIDDEN",
   "ROOM_ENDED",

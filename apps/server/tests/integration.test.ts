@@ -91,7 +91,7 @@ class SocketProbe {
     this.socket.send(JSON.stringify(event));
   }
 
-  waitFor(type: string, timeoutMs = 8_000): Promise<EventMessage> {
+  waitFor(type: string, timeoutMs = 15_000): Promise<EventMessage> {
     const existing = this.events.find((event) => event.type === type);
     if (existing) return Promise.resolve(existing);
     return new Promise((resolve, reject) => {
@@ -129,7 +129,7 @@ describe("HTTP 与 WebSocket 联调协议", () => {
     await context.app.close();
   });
 
-  it("十个游客并发完成五秒真人入场、互发消息且票据不可重放", async () => {
+  it("十个游客并发完成搜索与五秒入场、互发消息且票据不可重放", async () => {
     const createPlayer = async (nickname: string) => {
       const auth = await createSession(baseUrl);
       const profileResponse = await fetch(`${baseUrl}/api/profile`, {
@@ -172,18 +172,26 @@ describe("HTTP 与 WebSocket 联调协议", () => {
     const joinedAt = Date.now();
     players.forEach(({ probe }) => probe.send({ type: "match.join" }));
 
-    const queuedEvents = await Promise.all(
-      players.map(({ probe }) => probe.waitFor("match.queued")),
+    const searchingEvents = await Promise.all(
+      players.map(({ probe }) => probe.waitFor("match.searching")),
     );
-    const [firstQueued, secondQueued] = queuedEvents;
-    assert.ok(firstQueued && secondQueued);
-    assert.ok(Number(firstQueued.gateEndsAt) >= joinedAt + 4_900);
-    assert.ok(Number(secondQueued.gateEndsAt) >= joinedAt + 4_900);
+    const [firstSearching, secondSearching] = searchingEvents;
+    assert.ok(firstSearching && secondSearching);
+    assert.ok(Number(firstSearching.searchStartedAt) >= joinedAt - 100);
+    assert.ok(Number(secondSearching.searchStartedAt) >= joinedAt - 100);
+
+    const admissionEvents = await Promise.all(
+      players.map(({ probe }) => probe.waitFor("match.admission")),
+    );
+    const [firstAdmission, secondAdmission] = admissionEvents;
+    assert.ok(firstAdmission && secondAdmission);
+    assert.ok(Number(firstAdmission.gateEndsAt) >= joinedAt + 9_800);
+    assert.ok(Number(secondAdmission.gateEndsAt) >= joinedAt + 9_800);
 
     await Promise.all(
       players.map(({ probe }) => probe.waitFor("match.found")),
     );
-    assert.ok(Date.now() - joinedAt >= 4_900);
+    assert.ok(Date.now() - joinedAt >= 9_800);
 
     first.send({
       type: "chat.send",

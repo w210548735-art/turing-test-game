@@ -32,6 +32,9 @@ import type {
 } from "./types.js";
 
 export const ENTRY_GATE_MS = 5_000;
+export const MATCH_SEARCH_MIN_MS = 5_000;
+export const DEFAULT_MAX_CONCURRENT_ROOMS = 50;
+export const DEFAULT_MAX_QUEUE_SIZE = 500;
 export const GUESS_UNLOCK_MS = 20_000;
 export const ROOM_DURATION_MS = 5 * 60_000;
 export const DISCONNECT_GRACE_MS = 30_000;
@@ -48,8 +51,18 @@ type GameAiUsageBudget = Pick<AiUsageBudgetService, "reserve" | "settle">;
 interface QueuedPlayer {
   session: Session;
   joinedAt: number;
+  searchStartedAt?: number;
+  searchTimer?: NodeJS.Timeout;
+}
+
+interface PendingAdmission {
+  id: string;
+  players: QueuedPlayer[];
+  opponentType: "human" | "ai";
+  revealAt: number;
+  gateEndsAt: number;
+  revealTimer?: NodeJS.Timeout;
   gateTimer?: NodeJS.Timeout;
-  reserved: boolean;
 }
 
 export interface GameServiceOptions {
@@ -71,6 +84,8 @@ export interface GameServiceOptions {
     room: Room,
   ) => void | Promise<void>;
   onPersistenceError?: (error: unknown, operation: string) => void;
+  maxConcurrentRooms?: number;
+  maxQueueSize?: number;
 }
 
 export interface MatchMetrics {
@@ -85,7 +100,9 @@ export class GameService {
   readonly rooms = new Map<string, Room>();
   readonly reports = new Map<string, ReportRecord>();
 
-  private readonly queue: QueuedPlayer[] = [];
+  private readonly capacityQueue: QueuedPlayer[] = [];
+  private readonly searching: QueuedPlayer[] = [];
+  private readonly admissions = new Map<string, PendingAdmission>();
   private readonly recentMatchTypes: Array<"human" | "ai"> = [];
   private readonly now: () => number;
   private readonly random: () => number;
@@ -104,6 +121,8 @@ export class GameService {
   private readonly moderation: ModerationPipeline;
   private readonly onModerationDecision?: GameServiceOptions["onModerationDecision"];
   private readonly onPersistenceError?: GameServiceOptions["onPersistenceError"];
+  private readonly maxConcurrentRooms: number;
+  private readonly maxQueueSize: number;
   private stopping = false;
 
   constructor(options: GameServiceOptions = {}) {
@@ -121,6 +140,18 @@ export class GameService {
     this.moderation = options.moderation ?? new ModerationPipeline();
     this.onModerationDecision = options.onModerationDecision;
     this.onPersistenceError = options.onPersistenceError;
+    this.maxConcurrentRooms =
+      options.maxConcurrentRooms ?? DEFAULT_MAX_CONCURRENT_ROOMS;
+    this.maxQueueSize = options.maxQueueSize ?? DEFAULT_MAX_QUEUE_SIZE;
+    if (
+      !Number.isInteger(this.maxConcurrentRooms) ||
+      this.maxConcurrentRooms <= 0
+    ) {
+      throw new Error("maxConcurrentRooms 必须是正整数。");
+    }
+    if (!Number.isInteger(this.maxQueueSize) || this.maxQueueSize <= 0) {
+      throw new Error("maxQueueSize 必须是正整数。");
+    }
   }
 
   joinQueue(session: Session): void {
@@ -130,39 +161,56 @@ export class GameService {
     if (session.roomId && this.rooms.get(session.roomId)?.status === "active") {
       throw new AppError("ALREADY_IN_ROOM", "你已经在一个对局中。");
     }
-    if (this.queue.some((queued) => queued.session.userId === session.userId)) {
+    if (this.isWaiting(session.userId)) {
       throw new AppError("ALREADY_QUEUED", "你已经在匹配队列中。");
     }
 
     const queued: QueuedPlayer = {
       session,
       joinedAt: this.now(),
-      reserved: false,
     };
-    this.queue.push(queued);
-    this.send(session, {
-      type: "match.queued",
-      gateEndsAt: queued.joinedAt + ENTRY_GATE_MS,
-    });
-    this.tryReserveHumans();
-    if (!queued.reserved) {
-      queued.gateTimer = this.setTimer(
-        () => this.fillWithAiIfStillWaiting(queued),
-        ENTRY_GATE_MS,
+    if (this.canEnterSearch()) {
+      this.startSearching(queued);
+      return;
+    }
+    if (this.capacityQueue.length >= this.maxQueueSize) {
+      throw new AppError(
+        "MATCH_QUEUE_FULL",
+        "当前等待人数较多，请稍后再试。",
+        503,
       );
     }
+    this.capacityQueue.push(queued);
+    this.broadcastQueuePositions();
   }
 
   leaveQueue(session: Session): void {
-    const index = this.queue.findIndex(
+    const capacityIndex = this.capacityQueue.findIndex(
       (queued) => queued.session.userId === session.userId,
     );
-    if (index < 0) {
+    if (capacityIndex >= 0) {
+      this.capacityQueue.splice(capacityIndex, 1);
+      this.broadcastQueuePositions();
+      this.promoteCapacityQueue();
       return;
     }
-    const [queued] = this.queue.splice(index, 1);
-    if (queued?.gateTimer) {
-      this.clearTimer(queued.gateTimer);
+
+    const searching = this.searching.find(
+      (queued) => queued.session.userId === session.userId,
+    );
+    if (searching) {
+      this.removeSearching(searching);
+      this.promoteCapacityQueue();
+      return;
+    }
+
+    const admission = [...this.admissions.values()].find((candidate) =>
+      candidate.players.some(
+        (queued) => queued.session.userId === session.userId,
+      ),
+    );
+    if (admission) {
+      this.cancelAdmission(admission, session.userId);
     }
   }
 
@@ -496,10 +544,20 @@ export class GameService {
 
   shutdown(): void {
     this.stopping = true;
-    for (const queued of this.queue) {
-      if (queued.gateTimer) this.clearTimer(queued.gateTimer);
+    for (const queued of this.searching) {
+      if (queued.searchTimer) this.clearTimer(queued.searchTimer);
     }
-    this.queue.length = 0;
+    this.capacityQueue.length = 0;
+    this.searching.length = 0;
+    for (const admission of this.admissions.values()) {
+      if (admission.revealTimer) {
+        this.clearTimer(admission.revealTimer);
+      }
+      if (admission.gateTimer) {
+        this.clearTimer(admission.gateTimer);
+      }
+    }
+    this.admissions.clear();
     for (const room of this.rooms.values()) {
       this.cancelAi(room);
       if (room.expiryTimer) this.clearTimer(room.expiryTimer);
@@ -514,119 +572,261 @@ export class GameService {
     }
   }
 
+  private isWaiting(userId: string): boolean {
+    return (
+      this.capacityQueue.some(
+        (queued) => queued.session.userId === userId,
+      ) ||
+      this.searching.some(
+        (queued) => queued.session.userId === userId,
+      ) ||
+      [...this.admissions.values()].some((admission) =>
+        admission.players.some(
+          (queued) => queued.session.userId === userId,
+        ),
+      )
+    );
+  }
+
+  private occupiedRoomSlots(): number {
+    const activeRooms = [...this.rooms.values()].filter(
+      (room) => room.status === "active",
+    ).length;
+    return activeRooms + this.admissions.size;
+  }
+
+  private canEnterSearch(): boolean {
+    const freeRoomSlots =
+      this.maxConcurrentRooms - this.occupiedRoomSlots();
+    return (
+      freeRoomSlots > 0 &&
+      this.searching.length < freeRoomSlots * 2
+    );
+  }
+
+  private startSearching(
+    queued: QueuedPlayer,
+    searchStartedAt = this.now(),
+  ): void {
+    queued.searchStartedAt = searchStartedAt;
+    this.searching.push(queued);
+    this.send(queued.session, {
+      type: "match.searching",
+      searchStartedAt,
+    });
+    queued.searchTimer = this.setTimer(
+      () => this.fillWithAiIfStillWaiting(queued),
+      MATCH_SEARCH_MIN_MS,
+    );
+    this.tryReserveHumans();
+  }
+
+  private broadcastQueuePositions(): void {
+    this.capacityQueue.forEach((queued, index) => {
+      this.send(queued.session, {
+        type: "match.queued",
+        position: index + 1,
+        queuedAt: queued.joinedAt,
+      });
+    });
+  }
+
+  private promoteCapacityQueue(): void {
+    if (this.stopping) {
+      return;
+    }
+    while (this.capacityQueue.length > 0 && this.canEnterSearch()) {
+      const queued = this.capacityQueue.shift();
+      if (!queued) {
+        break;
+      }
+      if (
+        !queued.session.socket ||
+        queued.session.socket.readyState !== queued.session.socket.OPEN
+      ) {
+        continue;
+      }
+      this.startSearching(queued);
+    }
+    this.broadcastQueuePositions();
+  }
+
   private tryReserveHumans(): void {
-    const available = this.queue.filter((queued) => !queued.reserved);
-    while (available.length >= 2) {
-      const first = available.shift();
-      const second = available.shift();
+    while (
+      this.searching.length >= 2 &&
+      this.occupiedRoomSlots() < this.maxConcurrentRooms
+    ) {
+      const first = this.searching[0];
+      const second = this.searching[1];
       if (!first || !second) {
         break;
       }
-      first.reserved = true;
-      second.reserved = true;
-      if (first.gateTimer) this.clearTimer(first.gateTimer);
-      if (second.gateTimer) this.clearTimer(second.gateTimer);
-      const startAt = Math.max(
-        first.joinedAt + ENTRY_GATE_MS,
-        second.joinedAt + ENTRY_GATE_MS,
-      );
-      first.gateTimer = this.setTimer(
-        () => this.startHumanRoom(first, second),
-        Math.max(0, startAt - this.now()),
-      );
+      this.reserveAdmission([first, second], "human");
     }
   }
 
   private fillWithAiIfStillWaiting(queued: QueuedPlayer): void {
-    if (!this.queue.includes(queued) || queued.reserved) {
+    if (!this.searching.includes(queued)) {
       return;
     }
-    const human = this.queue.find(
+    const human = this.searching.find(
       (candidate) =>
         candidate !== queued &&
-        !candidate.reserved &&
         Boolean(candidate.session.socket),
     );
     if (human) {
-      queued.reserved = true;
-      human.reserved = true;
-      const startAt = Math.max(
-        queued.joinedAt + ENTRY_GATE_MS,
-        human.joinedAt + ENTRY_GATE_MS,
-      );
-      this.setTimer(
-        () => this.startHumanRoom(queued, human),
-        Math.max(0, startAt - this.now()),
-      );
+      this.reserveAdmission([queued, human], "human");
       return;
     }
     if (!this.aiBudget) {
-      queued.reserved = true;
-      this.removeQueued(queued);
-      this.startRoom([queued], "ai");
+      this.reserveAdmission([queued], "ai");
       return;
     }
-    queued.reserved = true;
     void this.aiBudget
       .reserveAiGame()
       .then((decision) => {
-        if (!this.queue.includes(queued)) return;
+        if (!this.searching.includes(queued)) return;
         if (decision.allowed) {
-          this.removeQueued(queued);
-          this.startRoom([queued], "ai");
+          this.reserveAdmission([queued], "ai");
           return;
         }
-        queued.reserved = false;
-        queued.joinedAt = this.now();
-        this.send(queued.session, {
-          type: "match.queued",
-          gateEndsAt: queued.joinedAt + ENTRY_GATE_MS,
-        });
         this.tryReserveHumans();
-        if (!queued.reserved) {
-          queued.gateTimer = this.setTimer(
+        if (this.searching.includes(queued)) {
+          queued.searchTimer = this.setTimer(
             () => this.fillWithAiIfStillWaiting(queued),
-            ENTRY_GATE_MS,
+            MATCH_SEARCH_MIN_MS,
           );
         }
       })
       .catch((error) => {
-        queued.reserved = false;
         this.onPersistenceError?.(error, "reserve_ai_budget");
-        if (this.queue.includes(queued)) {
-          queued.gateTimer = this.setTimer(
+        if (this.searching.includes(queued)) {
+          queued.searchTimer = this.setTimer(
             () => this.fillWithAiIfStillWaiting(queued),
-            ENTRY_GATE_MS,
+            MATCH_SEARCH_MIN_MS,
           );
         }
       });
   }
 
-  private startHumanRoom(
-    first: QueuedPlayer,
-    second: QueuedPlayer,
+  private reserveAdmission(
+    players: QueuedPlayer[],
+    opponentType: "human" | "ai",
   ): void {
-    if (!this.queue.includes(first) || !this.queue.includes(second)) {
+    if (
+      players.some((queued) => !this.searching.includes(queued)) ||
+      this.occupiedRoomSlots() >= this.maxConcurrentRooms
+    ) {
       return;
     }
-    if (!first.session.socket || !second.session.socket) {
-      first.reserved = false;
-      second.reserved = false;
-      this.tryReserveHumans();
-      return;
+    for (const queued of players) {
+      this.removeSearching(queued);
     }
-    this.removeQueued(first);
-    this.removeQueued(second);
-    this.startRoom([first, second], "human");
+    const revealAt = Math.max(
+      ...players.map(
+        (queued) =>
+          (queued.searchStartedAt ?? this.now()) + MATCH_SEARCH_MIN_MS,
+      ),
+    );
+    const admission: PendingAdmission = {
+      id: randomUUID(),
+      players,
+      opponentType,
+      revealAt,
+      gateEndsAt: revealAt + ENTRY_GATE_MS,
+    };
+    this.admissions.set(admission.id, admission);
+    admission.revealTimer = this.setTimer(
+      () => this.beginAdmission(admission),
+      Math.max(0, revealAt - this.now()),
+    );
+    this.promoteCapacityQueue();
   }
 
-  private removeQueued(queued: QueuedPlayer): void {
-    const index = this.queue.indexOf(queued);
-    if (index >= 0) {
-      this.queue.splice(index, 1);
+  private beginAdmission(admission: PendingAdmission): void {
+    if (!this.admissions.has(admission.id)) {
+      return;
     }
-    if (queued.gateTimer) {
-      this.clearTimer(queued.gateTimer);
+    const disconnected = admission.players.find(
+      (queued) =>
+        !queued.session.socket ||
+        queued.session.socket.readyState !== queued.session.socket.OPEN,
+    );
+    if (disconnected) {
+      this.cancelAdmission(admission, disconnected.session.userId);
+      return;
+    }
+    for (const queued of admission.players) {
+      this.send(queued.session, {
+        type: "match.admission",
+        gateEndsAt: admission.gateEndsAt,
+      });
+    }
+    admission.gateTimer = this.setTimer(
+      () => this.finishAdmission(admission),
+      Math.max(0, admission.gateEndsAt - this.now()),
+    );
+  }
+
+  private finishAdmission(admission: PendingAdmission): void {
+    if (!this.admissions.delete(admission.id)) {
+      return;
+    }
+    const disconnected = admission.players.find(
+      (queued) =>
+        !queued.session.socket ||
+        queued.session.socket.readyState !== queued.session.socket.OPEN,
+    );
+    if (disconnected) {
+      for (const survivor of admission.players) {
+        if (
+          survivor !== disconnected &&
+          survivor.session.socket &&
+          survivor.session.socket.readyState === survivor.session.socket.OPEN
+        ) {
+          this.startSearching(survivor);
+        }
+      }
+      this.promoteCapacityQueue();
+      return;
+    }
+    this.startRoom(admission.players, admission.opponentType);
+    this.promoteCapacityQueue();
+  }
+
+  private cancelAdmission(
+    admission: PendingAdmission,
+    leavingUserId: string,
+  ): void {
+    if (!this.admissions.delete(admission.id)) {
+      return;
+    }
+    if (admission.revealTimer) {
+      this.clearTimer(admission.revealTimer);
+    }
+    if (admission.gateTimer) {
+      this.clearTimer(admission.gateTimer);
+    }
+    for (const queued of admission.players) {
+      if (
+        queued.session.userId !== leavingUserId &&
+        queued.session.socket &&
+        queued.session.socket.readyState === queued.session.socket.OPEN
+      ) {
+        this.startSearching(queued);
+      }
+    }
+    this.promoteCapacityQueue();
+  }
+
+  private removeSearching(queued: QueuedPlayer): void {
+    const index = this.searching.indexOf(queued);
+    if (index >= 0) {
+      this.searching.splice(index, 1);
+    }
+    if (queued.searchTimer) {
+      this.clearTimer(queued.searchTimer);
+      queued.searchTimer = undefined;
     }
   }
 
@@ -670,6 +870,7 @@ export class GameService {
               message: "对局初始化失败，请重新匹配。",
             });
           }
+          this.promoteCapacityQueue();
         });
       return room;
     }
@@ -711,7 +912,7 @@ export class GameService {
           id: room.id,
           status: "active",
           matchType: room.opponentType,
-          rulesetVersion: "alpha-2026-07-24.1",
+          rulesetVersion: "alpha-2026-07-24.2",
           aiModel:
             room.opponentType === "ai" ? "deepseek-v4-flash" : null,
           aiProfileVersion:
@@ -979,6 +1180,7 @@ export class GameService {
       return [];
     }
     room.status = "settled";
+    this.promoteCapacityQueue();
     this.cancelAi(room);
     if (room.expiryTimer) {
       this.clearTimer(room.expiryTimer);

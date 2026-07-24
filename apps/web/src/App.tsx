@@ -45,6 +45,13 @@ const OPENING_QUESTIONS = [
   "描述一件你明知没必要却仍会做的事。",
 ];
 
+const MATCH_SEARCH_MESSAGES = [
+  "正在为你寻找一位旗鼓相当的对手",
+  "正在扫描此刻在线的匿名玩家",
+  "好的对话，值得多等一会儿",
+  "正在把两位观察者带到同一扇门前",
+];
+
 type AuthMode = "login" | "register" | "forgot" | "reset" | "verify";
 
 interface InitialAuthRoute {
@@ -254,12 +261,24 @@ export default function App() {
     (event: ServerEvent) => {
       switch (event.type) {
         case "match.queued":
-          gateEndRef.current = Math.max(
-            gateEndRef.current ?? 0,
-            timestamp(event.gateEndsAt),
-          );
+          gateEndRef.current = null;
           dispatch({
             type: "MATCH_QUEUED",
+            position: event.position,
+            queuedAt: timestamp(event.queuedAt),
+          });
+          break;
+        case "match.searching":
+          gateEndRef.current = null;
+          dispatch({
+            type: "MATCH_SEARCHING",
+            searchStartedAt: timestamp(event.searchStartedAt),
+          });
+          break;
+        case "match.admission":
+          gateEndRef.current = timestamp(event.gateEndsAt);
+          dispatch({
+            type: "MATCH_ADMISSION",
             gateEndsAt: gateEndRef.current,
           });
           break;
@@ -281,6 +300,8 @@ export default function App() {
               ),
               opponentLabel: event.opponentLabel || "匿名玩家",
             });
+            gateEndRef.current = null;
+            delayedMatchTimerRef.current = null;
           };
           const delay = releaseAt - Date.now();
           if (delay > 0) {
@@ -560,11 +581,6 @@ export default function App() {
         }
         transportRef.current = transport;
         await transport.connect();
-        gateEndRef.current = Date.now() + 5_000;
-        dispatch({
-          type: "MATCH_QUEUED",
-          gateEndsAt: gateEndRef.current,
-        });
         transport.send({ type: "match.join" });
       } catch (error) {
         dispatch({ type: "CONNECTION", connection: "disconnected" });
@@ -689,6 +705,18 @@ export default function App() {
     sendSafely({ type: "match.join" });
   }
 
+  function cancelMatching() {
+    sendSafely({ type: "match.cancel" });
+    transportRef.current?.close();
+    transportRef.current = null;
+    gateEndRef.current = null;
+    if (delayedMatchTimerRef.current !== null) {
+      window.clearTimeout(delayedMatchTimerRef.current);
+      delayedMatchTimerRef.current = null;
+    }
+    dispatch({ type: "RESET_ALL" });
+  }
+
   function leaveGame() {
     sendSafely({ type: "game.leave" });
     transportRef.current?.close();
@@ -703,6 +731,15 @@ export default function App() {
     ? Math.min(1, Math.max(0, 1 - gateRemaining / 5_000))
     : state.matchProgress;
   const matchProgress = Math.max(state.matchProgress, gateDurationProgress);
+  const queueElapsed = Math.max(0, now - (state.queuedAt ?? now));
+  const searchElapsed = Math.max(
+    0,
+    now - (state.searchStartedAt ?? now),
+  );
+  const searchMessage =
+    MATCH_SEARCH_MESSAGES[
+      Math.floor(searchElapsed / 3_000) % MATCH_SEARCH_MESSAGES.length
+    ];
   const guessRemaining = Math.max(0, (state.minGuessAt ?? now) - now);
   const gameRemaining = Math.max(0, (state.endsAt ?? now) - now);
   const guessReady = canSubmitGuess(state, now);
@@ -816,17 +853,36 @@ export default function App() {
         )}
 
         {!showAccountAccess && state.screen === "matching" && (
-          <Matching
+          <SearchMatching
+            nickname={state.nickname}
+            elapsed={searchElapsed}
+            message={searchMessage}
+            demoMode={state.demoMode}
+            hasError={Boolean(state.error)}
+            onCancel={cancelMatching}
+            onDemo={startDemo}
+          />
+        )}
+
+        {!showAccountAccess && state.screen === "queue" && (
+          <CapacityQueue
+            nickname={state.nickname}
+            position={state.queuePosition ?? 1}
+            elapsed={queueElapsed}
+            hasError={Boolean(state.error)}
+            onCancel={cancelMatching}
+            onDemo={startDemo}
+          />
+        )}
+
+        {!showAccountAccess && state.screen === "admission" && (
+          <AdmissionGate
             nickname={state.nickname}
             progress={matchProgress}
             remaining={gateRemaining}
             demoMode={state.demoMode}
             hasError={Boolean(state.error)}
-            onCancel={() => {
-              sendSafely({ type: "match.cancel" });
-              transportRef.current?.close();
-              dispatch({ type: "RESET_ALL" });
-            }}
+            onCancel={cancelMatching}
             onDemo={startDemo}
           />
         )}
@@ -1289,7 +1345,141 @@ function Onboarding({
   );
 }
 
-interface MatchingProps {
+interface MatchingActionsProps {
+  demoMode: boolean;
+  hasError: boolean;
+  onCancel: () => void;
+  onDemo: () => void;
+}
+
+function MatchingActions({
+  demoMode,
+  hasError,
+  onCancel,
+  onDemo,
+}: MatchingActionsProps) {
+  return (
+    <div className="matching-actions">
+      {hasError && !demoMode && (
+        <button className="primary-action compact" type="button" onClick={onDemo}>
+          切换本地演示 <span aria-hidden="true">↗</span>
+        </button>
+      )}
+      <button className="text-action" type="button" onClick={onCancel}>
+        取消匹配
+      </button>
+    </div>
+  );
+}
+
+interface CapacityQueueProps extends Omit<MatchingActionsProps, "demoMode"> {
+  nickname: string;
+  position: number;
+  elapsed: number;
+}
+
+function CapacityQueue({
+  nickname,
+  position,
+  elapsed,
+  hasError,
+  onCancel,
+  onDemo,
+}: CapacityQueueProps) {
+  return (
+    <section className="matching-screen phase-screen queue-screen">
+      <div className="matching-meta">
+        <span>WAITING LINE</span>
+        <span>已等待 {formatClock(elapsed)}</span>
+      </div>
+      <div className="matching-core phase-core">
+        <div className="matching-count queue-position" aria-live="polite">
+          {String(position).padStart(2, "0")}
+        </div>
+        <div className="phase-copy">
+          <p className="eyebrow">PLAYER / {nickname.toUpperCase()}</p>
+          <h1>
+            正在为你
+            <br />
+            <span>安排席位</span>
+          </h1>
+          <p>
+            当前参与者较多。保持页面开启，轮到你时会自动进入匹配。
+          </p>
+        </div>
+      </div>
+      <div className="queue-status" role="status" aria-live="polite">
+        <span>QUEUE POSITION</span>
+        <strong>前方还有 {Math.max(0, position - 1)} 位参与者</strong>
+      </div>
+      <MatchingActions
+        demoMode={false}
+        hasError={hasError}
+        onCancel={onCancel}
+        onDemo={onDemo}
+      />
+    </section>
+  );
+}
+
+interface SearchMatchingProps extends MatchingActionsProps {
+  nickname: string;
+  elapsed: number;
+  message: string;
+}
+
+function SearchMatching({
+  nickname,
+  elapsed,
+  message,
+  demoMode,
+  hasError,
+  onCancel,
+  onDemo,
+}: SearchMatchingProps) {
+  return (
+    <section className="matching-screen phase-screen search-screen">
+      <div className="matching-meta">
+        <span>OPPONENT SEARCH</span>
+        <span>{demoMode ? "本地演示通道" : "匿名公共通道"}</span>
+      </div>
+      <div className="matching-core phase-core">
+        <div className="search-orbit" aria-hidden="true">
+          <span />
+          <span />
+          <strong>?</strong>
+        </div>
+        <div className="phase-copy">
+          <p className="eyebrow">PLAYER / {nickname.toUpperCase()}</p>
+          <h1>
+            正在寻找
+            <br />
+            <span>你的对手</span>
+          </h1>
+          <p className="search-message" role="status" aria-live="polite">
+            {message}
+          </p>
+        </div>
+      </div>
+      <div className="search-status">
+        <span className="search-dots" aria-hidden="true">
+          <i />
+          <i />
+          <i />
+        </span>
+        <span>搜索已进行 {formatClock(elapsed)}</span>
+      </div>
+      <MatchingActions
+        demoMode={demoMode}
+        hasError={hasError}
+        onCancel={onCancel}
+        onDemo={onDemo}
+      />
+    </section>
+  );
+}
+
+interface AdmissionGateProps {
   nickname: string;
   progress: number;
   remaining: number;
@@ -1299,7 +1489,7 @@ interface MatchingProps {
   onDemo: () => void;
 }
 
-function Matching({
+function AdmissionGate({
   nickname,
   progress,
   remaining,
@@ -1307,7 +1497,7 @@ function Matching({
   hasError,
   onCancel,
   onDemo,
-}: MatchingProps) {
+}: AdmissionGateProps) {
   const progressPercent = Math.round(progress * 100);
   const connectionStage =
     progressPercent < 25
@@ -1367,16 +1557,12 @@ function Matching({
           )}
         </div>
       </div>
-      <div className="matching-actions">
-        {hasError && !demoMode && (
-          <button className="primary-action compact" type="button" onClick={onDemo}>
-            切换本地演示 <span aria-hidden="true">↗</span>
-          </button>
-        )}
-        <button className="text-action" type="button" onClick={onCancel}>
-          取消匹配
-        </button>
-      </div>
+      <MatchingActions
+        demoMode={demoMode}
+        hasError={hasError}
+        onCancel={onCancel}
+        onDemo={onDemo}
+      />
     </section>
   );
 }

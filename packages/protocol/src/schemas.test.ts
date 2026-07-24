@@ -56,6 +56,34 @@ describe("共享协议", () => {
     ).toBe(true);
   });
 
+  it("区分容量排队、寻找对手和五秒入场事件", () => {
+    expect(
+      serverEventSchema.safeParse({
+        type: "match.queued",
+        position: 3,
+        queuedAt: Date.now(),
+      }).success,
+    ).toBe(true);
+    expect(
+      serverEventSchema.safeParse({
+        type: "match.searching",
+        searchStartedAt: Date.now(),
+      }).success,
+    ).toBe(true);
+    expect(
+      serverEventSchema.safeParse({
+        type: "match.admission",
+        gateEndsAt: Date.now() + 5_000,
+      }).success,
+    ).toBe(true);
+    expect(
+      serverEventSchema.safeParse({
+        type: "match.queued",
+        gateEndsAt: Date.now() + 5_000,
+      }).success,
+    ).toBe(false);
+  });
+
   it("严格校验邮箱、密码边界和账户六态", () => {
     expect(emailSchema.parse("  sender@example.com ")).toBe(
       "sender@example.com",

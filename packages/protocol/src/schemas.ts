@@ -164,6 +164,15 @@ export const serverEventSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("match.queued"),
+    position: z.number().int().positive(),
+    queuedAt: z.union([z.number(), z.string()]),
+  }),
+  z.object({
+    type: z.literal("match.searching"),
+    searchStartedAt: z.union([z.number(), z.string()]),
+  }),
+  z.object({
+    type: z.literal("match.admission"),
     gateEndsAt: z.union([z.number(), z.string()]),
   }),
   z.object({

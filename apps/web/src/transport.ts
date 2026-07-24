@@ -489,8 +489,10 @@ export class DemoTransport implements GameTransport {
     this.sequence = 0;
     this.replyIndex = 0;
     this.opponentType = Math.random() < 0.25 ? "ai" : "human";
-    const gateEndsAt = Date.now() + 5_000;
-    this.callbacks.onEvent({ type: "match.queued", gateEndsAt });
+    this.callbacks.onEvent({
+      type: "match.searching",
+      searchStartedAt: Date.now(),
+    });
 
     for (let step = 1; step <= 10; step += 1) {
       this.later(() => {
@@ -498,8 +500,15 @@ export class DemoTransport implements GameTransport {
           type: "match.progress",
           progress: step / 10,
         });
-      }, step * 500);
+      }, 5_000 + step * 500);
     }
+
+    this.later(() => {
+      this.callbacks.onEvent({
+        type: "match.admission",
+        gateEndsAt: Date.now() + 5_000,
+      });
+    }, 5_000);
 
     this.later(() => {
       const startedAt = Date.now();
@@ -511,7 +520,7 @@ export class DemoTransport implements GameTransport {
         minGuessAt: startedAt + 20_000,
         opponentLabel: "匿名玩家 / 07",
       });
-    }, 5_000);
+    }, 10_000);
   }
 
   private receiveOwnMessage(content: string, id: string): void {

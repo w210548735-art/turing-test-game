@@ -7,6 +7,7 @@ import {
   ENTRY_GATE_MS,
   GUESS_UNLOCK_MS,
   GameService,
+  MATCH_SEARCH_MIN_MS,
   type GameServiceOptions,
 } from "../src/game.js";
 import type {
@@ -163,15 +164,36 @@ function harness(options: GameServiceOptions = {}) {
   return { service, clock };
 }
 
+function finishMatch(clock: ReturnType<typeof fakeClock>): void {
+  clock.advance(MATCH_SEARCH_MIN_MS + ENTRY_GATE_MS);
+}
+
 describe("匹配与结算规则", () => {
-  it("AI 和真人对局都不能绕过每位玩家的五秒入场门", () => {
+  it("AI 和真人都先搜索至少五秒，再经过统一五秒入场门", () => {
     const { service, clock } = harness();
     const a = session("a");
     service.joinQueue(a.session);
-    clock.advance(ENTRY_GATE_MS - 1);
-    assert.equal(a.socket.sent.some((event) => event.type === "match.found"), false);
+    assert.equal(a.socket.sent[0]?.type, "match.searching");
+    clock.advance(MATCH_SEARCH_MIN_MS - 1);
+    assert.equal(
+      a.socket.sent.some((event) => event.type === "match.admission"),
+      false,
+    );
     clock.advance(1);
-    assert.equal(a.socket.sent.some((event) => event.type === "match.found"), true);
+    assert.equal(
+      a.socket.sent.some((event) => event.type === "match.admission"),
+      true,
+    );
+    clock.advance(ENTRY_GATE_MS - 1);
+    assert.equal(
+      a.socket.sent.some((event) => event.type === "match.found"),
+      false,
+    );
+    clock.advance(1);
+    assert.equal(
+      a.socket.sent.some((event) => event.type === "match.found"),
+      true,
+    );
 
     const { service: humanService, clock: humanClock } = harness();
     const b = session("b");
@@ -179,18 +201,112 @@ describe("匹配与结算规则", () => {
     humanService.joinQueue(b.session);
     humanClock.advance(2_000);
     humanService.joinQueue(c.session);
-    humanClock.advance(4_999);
-    assert.equal(b.socket.sent.some((event) => event.type === "match.found"), false);
+    humanClock.advance(MATCH_SEARCH_MIN_MS - 1);
+    assert.equal(
+      b.socket.sent.some((event) => event.type === "match.admission"),
+      false,
+    );
     humanClock.advance(1);
-    assert.equal(b.socket.sent.some((event) => event.type === "match.found"), true);
-    assert.equal(c.socket.sent.some((event) => event.type === "match.found"), true);
+    assert.equal(
+      b.socket.sent.some((event) => event.type === "match.admission"),
+      true,
+    );
+    assert.equal(
+      c.socket.sent.some((event) => event.type === "match.admission"),
+      true,
+    );
+    humanClock.advance(ENTRY_GATE_MS);
+    assert.equal(
+      b.socket.sent.some((event) => event.type === "match.found"),
+      true,
+    );
+    assert.equal(
+      c.socket.sent.some((event) => event.type === "match.found"),
+      true,
+    );
+  });
+
+  it("容量满时按位置排队，房间结算后自动提升，队列满则拒绝", () => {
+    const { service, clock } = harness({
+      maxConcurrentRooms: 1,
+      maxQueueSize: 1,
+    });
+    const a = session("capacity-a");
+    const b = session("capacity-b");
+    const c = session("capacity-c");
+    const d = session("capacity-d");
+
+    service.joinQueue(a.session);
+    service.joinQueue(b.session);
+    service.joinQueue(c.session);
+    const queued = c.socket.sent.find(
+      (event) => event.type === "match.queued",
+    );
+    assert.equal(queued?.position, 1);
+    assert.equal(queued?.queuedAt, 0);
+    assert.throws(
+      () => service.joinQueue(d.session),
+      (error: unknown) =>
+        error instanceof Error &&
+        "code" in error &&
+        error.code === "MATCH_QUEUE_FULL",
+    );
+
+    finishMatch(clock);
+    clock.advance(GUESS_UNLOCK_MS);
+    service.submitGuess(a.session, "human");
+    service.submitGuess(b.session, "human");
+
+    assert.equal(
+      c.socket.sent.some((event) => event.type === "match.searching"),
+      true,
+    );
+  });
+
+  it("入场前一方取消时，仍在线的一方重新搜索且不会进入旧房间", () => {
+    const { service, clock } = harness();
+    const a = session("cancel-a");
+    const b = session("cancel-b");
+    const c = session("cancel-c");
+
+    service.joinQueue(a.session);
+    clock.advance(1_000);
+    service.joinQueue(b.session);
+    clock.advance(1_000);
+    service.leaveQueue(a.session);
+
+    const bSearchingEvents = b.socket.sent.filter(
+      (event) => event.type === "match.searching",
+    );
+    assert.equal(bSearchingEvents.length, 2);
+    assert.equal(bSearchingEvents[1]?.searchStartedAt, 2_000);
+
+    service.joinQueue(c.session);
+    clock.advance(MATCH_SEARCH_MIN_MS);
+    assert.equal(
+      b.socket.sent.some((event) => event.type === "match.admission"),
+      true,
+    );
+    assert.equal(
+      a.socket.sent.some((event) => event.type === "match.found"),
+      false,
+    );
+    clock.advance(ENTRY_GATE_MS);
+    assert.equal(
+      b.socket.sent.some((event) => event.type === "match.found"),
+      true,
+    );
+    assert.equal(
+      c.socket.sent.some((event) => event.type === "match.found"),
+      true,
+    );
   });
 
   it("AI 局锁定判断后取消 AI 回复并立即结算", () => {
     const { service, clock } = harness();
     const player = session("a");
     service.joinQueue(player.session);
-    clock.advance(ENTRY_GATE_MS);
+    finishMatch(clock);
     clock.advance(GUESS_UNLOCK_MS);
     service.sendChat(player.session, "你是谁？");
     service.submitGuess(player.session, "ai");
@@ -211,7 +327,7 @@ describe("匹配与结算规则", () => {
     const b = session("b");
     service.joinQueue(a.session);
     service.joinQueue(b.session);
-    clock.advance(ENTRY_GATE_MS);
+    finishMatch(clock);
     clock.advance(GUESS_UNLOCK_MS);
 
     service.submitGuess(a.session, "human");
@@ -240,7 +356,7 @@ describe("匹配与结算规则", () => {
     const b = session("b");
     service.joinQueue(a.session);
     service.joinQueue(b.session);
-    clock.advance(ENTRY_GATE_MS);
+    finishMatch(clock);
 
     service.sendChat(a.session, "加我微信: abcdef123");
     const redacted = b.socket.sent.find(
@@ -273,7 +389,7 @@ describe("匹配与结算规则", () => {
     const { service, clock } = harness({ aiUsageBudget: budget });
     const player = session("budget-success");
     service.joinQueue(player.session);
-    clock.advance(ENTRY_GATE_MS);
+    finishMatch(clock);
 
     service.sendChat(player.session, "你好");
     clock.advance(500);
@@ -316,7 +432,7 @@ describe("匹配与结算规则", () => {
     });
     const player = session("budget-rejected");
     service.joinQueue(player.session);
-    clock.advance(ENTRY_GATE_MS);
+    finishMatch(clock);
 
     service.sendChat(player.session, "你好");
     clock.advance(500);
@@ -344,7 +460,7 @@ describe("匹配与结算规则", () => {
     });
     const failedPlayer = session("budget-failed");
     failedHarness.service.joinQueue(failedPlayer.session);
-    failedHarness.clock.advance(ENTRY_GATE_MS);
+    finishMatch(failedHarness.clock);
     failedHarness.service.sendChat(failedPlayer.session, "失败路径");
     failedHarness.clock.advance(500);
     await flushAsync();
@@ -372,7 +488,7 @@ describe("匹配与结算规则", () => {
     });
     const cancelledPlayer = session("budget-cancelled");
     cancelledHarness.service.joinQueue(cancelledPlayer.session);
-    cancelledHarness.clock.advance(ENTRY_GATE_MS);
+    finishMatch(cancelledHarness.clock);
     cancelledHarness.service.sendChat(cancelledPlayer.session, "取消路径");
     cancelledHarness.clock.advance(500);
     await flushAsync();
