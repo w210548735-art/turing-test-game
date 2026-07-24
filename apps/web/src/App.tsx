@@ -2279,11 +2279,31 @@ function SupportDialog({ onClose }: { onClose: () => void }) {
         </div>
         <span className="support-thanks">THANK YOU!</span>
         <h2 id="support-title">请作者喝杯奶茶叭</h2>
-        <p>谢谢你喜欢这个小实验呀，量力支持就好喵 ฅ(˵ •̀ ᴗ - ˵ ) ✧</p>
-        <div className="support-code-placeholder" aria-label="收款码待添加">
-          <span>QR SLOT / 01</span>
-          <strong>收款码正在赶来 ing</strong>
-          <small>等你把图片路径投喂给我，就会在这里出现啦</small>
+        <p>
+          谢谢你喜欢这个小实验呀，微信或支付宝任选一个，量力支持就好喵
+          ฅ(˵ •̀ ᴗ - ˵ ) ✧
+        </p>
+        <div className="support-code-list" aria-label="作者收款码">
+          <figure className="support-code-card is-wechat">
+            <img
+              src="/support/wechat-pay.jpg"
+              alt="微信支付收款码"
+            />
+            <figcaption>
+              <strong>微信支付</strong>
+              <span>打开微信扫一扫</span>
+            </figcaption>
+          </figure>
+          <figure className="support-code-card is-alipay">
+            <img
+              src="/support/alipay.jpg"
+              alt="支付宝收款码"
+            />
+            <figcaption>
+              <strong>支付宝</strong>
+              <span>打开支付宝扫一扫</span>
+            </figcaption>
+          </figure>
         </div>
         <button className="support-close-action" type="button" onClick={onClose}>
           好哒，下次一定

@@ -1982,7 +1982,7 @@ button:disabled {
 }
 
 .support-modal {
-  width: min(560px, 100%);
+  width: min(820px, 100%);
   padding: clamp(24px, 3.5vw, 38px);
   text-align: center;
   box-shadow: 12px 12px 0 #ff8a3d;
@@ -2023,35 +2023,60 @@ button:disabled {
   font-size: 0.78rem;
 }
 
-.support-code-placeholder {
+.support-code-list {
   display: grid;
-  place-items: center;
-  aspect-ratio: 1;
-  width: min(280px, 38dvh, 100%);
-  margin: 0 auto 14px;
-  border: 2px solid var(--ink);
-  background:
-    linear-gradient(90deg, rgb(16 17 15 / 5%) 1px, transparent 1px),
-    linear-gradient(rgb(16 17 15 / 5%) 1px, transparent 1px),
-    #fff;
-  background-size: 18px 18px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin: 0 auto 18px;
 }
 
-.support-code-placeholder span,
-.support-code-placeholder small {
+.support-code-card {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  overflow: hidden;
+  border: 2px solid var(--ink);
+  background: #fff;
+  text-align: left;
+}
+
+.support-code-card img {
+  display: block;
+  width: 100%;
+  max-height: min(410px, 48dvh);
+  object-fit: contain;
+  background: #fff;
+}
+
+.support-code-card figcaption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 54px;
+  border-top: 2px solid var(--ink);
+  padding: 10px 14px;
+}
+
+.support-code-card figcaption strong {
+  font-size: 0.82rem;
+}
+
+.support-code-card figcaption span {
   color: var(--muted);
   font-size: 0.58rem;
   font-weight: 700;
-  letter-spacing: 0.1em;
 }
 
-.support-code-placeholder strong {
-  font-size: clamp(1.5rem, 5vw, 2.5rem);
-  letter-spacing: -0.06em;
+.support-code-card.is-wechat figcaption {
+  background: #d8ffe9;
+}
+
+.support-code-card.is-alipay figcaption {
+  background: #dcecff;
 }
 
 .support-close-action {
-  width: min(280px, 100%);
+  width: min(360px, 100%);
   background: #ffd46a;
 }
 
@@ -2970,8 +2995,13 @@ button:disabled {
     font-size: clamp(2.4rem, 13vw, 3.2rem);
   }
 
-  .support-code-placeholder {
-    width: min(260px, 34dvh, 100%);
+  .support-code-list {
+    grid-template-columns: 1fr;
+    width: min(320px, 100%);
+  }
+
+  .support-code-card img {
+    max-height: none;
   }
 
   .account-facts {
