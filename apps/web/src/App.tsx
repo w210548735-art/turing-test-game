@@ -964,10 +964,6 @@ function AccountAccess({
           <br />
           <span>你</span>。
         </h1>
-        <p>
-          在线匹配使用已验证的 QQ 邮箱账户。浏览器只保存安全 Cookie；
-          密码、长期会话 Token 和 CSRF 不会写入本地存储。
-        </p>
         <dl className="account-facts">
           <div>
             <dt>SESSION</dt>
@@ -1281,7 +1277,7 @@ function Matching({
   return (
     <section className="matching-screen">
       <div className="matching-meta">
-        <span>ROOM CALIBRATION</span>
+        <span>ROOM CONNECTION</span>
         <span>{demoMode ? "本地演示通道" : "匿名公共通道"}</span>
       </div>
       <div className="matching-core">
@@ -1297,14 +1293,11 @@ function Matching({
             <br />
             <span>进入房间</span>
           </h1>
-          <p>
-            房间将在统一的 5 秒校准后开启。对方身份不会因匹配速度而暴露。
-          </p>
         </div>
       </div>
       <div className="calibration">
         <div className="calibration-label">
-          <span>正在校准入场时序</span>
+          <span>正在连接房间</span>
           <span>{Math.round(progress * 100)}%</span>
         </div>
         <div
