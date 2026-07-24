@@ -12,13 +12,17 @@ http://127.0.0.1 {
 	encode zstd gzip
 
 	@health path /healthz
-	respond @health "ok" 200
+	handle @health {
+		respond "ok" 200
+	}
 
 	@backend path /api/* /ws
-	reverse_proxy @backend server:8787 {
-		health_uri /api/ready
-		health_interval 15s
-		health_timeout 3s
+	handle @backend {
+		reverse_proxy server:8787 {
+			health_uri /api/ready
+			health_interval 15s
+			health_timeout 3s
+		}
 	}
 
 	header {
@@ -30,9 +34,11 @@ http://127.0.0.1 {
 		-Server
 	}
 
-	root * /srv
-	try_files {path} /index.html
-	file_server
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
 
 	log {
 		output stdout
