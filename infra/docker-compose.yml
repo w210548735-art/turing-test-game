@@ -10,9 +10,9 @@ services:
       NODE_ENV: production
       HOST: 0.0.0.0
       PORT: 8787
-      WEB_ORIGIN: ${SITE_ADDRESS:-http://localhost}
-      ALLOWED_ORIGINS: ${SITE_ADDRESS:-http://localhost}
-      PUBLIC_WEB_URL: ${SITE_ADDRESS:-http://localhost}
+      WEB_ORIGIN: ${WEB_ORIGIN:-${SITE_ADDRESS:-http://localhost}}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-${SITE_ADDRESS:-http://localhost}}
+      PUBLIC_WEB_URL: ${PUBLIC_WEB_URL:-${SITE_ADDRESS:-http://localhost}}
       DEEPSEEK_API_KEY_FILE: /run/secrets/deepseek_api_key
       QQ_SMTP_USER: ${QQ_SMTP_USER:?set QQ_SMTP_USER}
       QQ_SMTP_FROM_NAME: ${QQ_SMTP_FROM_NAME:-图灵测试}
