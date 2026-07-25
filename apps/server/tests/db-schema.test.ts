@@ -428,4 +428,28 @@ describe("数据库结构", () => {
     assert.match(sql, /device_accounts_user_linked_idx/);
     assert.doesNotMatch(sql, /DROP (?:TABLE|COLUMN|TYPE|INDEX)/i);
   });
+
+  it("注册账户拥有独立玩家编号和全局名称，访客不会自动占号", async () => {
+    const columns = getTableColumns(users);
+    assert.equal(columns.playerNumber.name, "player_number");
+    assert.equal(columns.playerNumber.notNull, false);
+    assert.equal(columns.displayName.name, "display_name");
+    assert.equal(columns.displayName.notNull, false);
+
+    const migrationUrl = new URL(
+      "../drizzle/0007_account_identity.sql",
+      import.meta.url,
+    );
+    const sql = await readFile(migrationUrl, "utf8");
+    assert.match(sql, /CREATE SEQUENCE "user_player_number_seq"/);
+    assert.match(
+      sql,
+      /WHERE "email_canonical" IS NOT NULL AND "player_number" IS NULL/,
+    );
+    assert.match(sql, /users_player_number_uidx/);
+    assert.doesNotMatch(
+      sql,
+      /ALTER COLUMN "player_number" SET DEFAULT/,
+    );
+  });
 });

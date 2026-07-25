@@ -71,6 +71,8 @@ export interface AccountExportSummary {
   account: {
     id: string;
     email: string;
+    playerNumber: number;
+    displayName: string;
     status: AccountStatus;
     emailVerifiedAt?: Date;
     createdAt: Date;
@@ -359,6 +361,7 @@ export class AuthService {
     user.emailOriginal = `deleted-${user.id}@deleted.invalid`;
     user.emailCanonical = user.emailOriginal;
     user.passwordHash = `deleted:${randomUUID()}`;
+    user.displayName = "已删除用户";
     user.nickname = "已删除用户";
     user.typingStatus = "";
     user.status = "DELETED";
@@ -376,6 +379,8 @@ export class AuthService {
       account: {
         id: user.id,
         email: user.emailOriginal,
+        playerNumber: user.playerNumber,
+        displayName: user.displayName,
         status: user.status,
         ...(user.emailVerifiedAt
           ? { emailVerifiedAt: new Date(user.emailVerifiedAt) }

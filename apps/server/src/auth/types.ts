@@ -11,6 +11,8 @@ export interface AuthUser {
   emailOriginal: string;
   emailCanonical: string;
   passwordHash: string;
+  playerNumber: number;
+  displayName: string;
   nickname: string;
   typingStatus: string;
   status: AccountStatus;

@@ -12,7 +12,13 @@ import {
 
 type RecordLoadState = "loading" | "ready" | "error";
 
-export function EchoRecordPage({ onBack }: { onBack: () => void }) {
+export function EchoRecordPage({
+  onBack,
+  onArchive,
+}: {
+  onBack: () => void;
+  onArchive: () => void;
+}) {
   const [loadState, setLoadState] =
     useState<RecordLoadState>("loading");
   const [records, setRecords] = useState<EchoRecordsResponse | null>(null);
@@ -47,7 +53,7 @@ export function EchoRecordPage({ onBack }: { onBack: () => void }) {
     <section className="record-page echo-record-page">
       <div className="record-page-heading">
         <button className="record-back" type="button" onClick={onBack}>
-          ← 返回回声档案
+          ← 返回账户数据
         </button>
         <div>
           <p>ECHO REVIEWER / CLOUD RECORD</p>
@@ -107,7 +113,11 @@ export function EchoRecordPage({ onBack }: { onBack: () => void }) {
                 每份档案包含 A、B 两个身份。身份命中率按正确身份数除以已判断
                 身份总数计算；双身份全对才计为一次完美判读。
               </p>
-              <button className="primary-action" type="button" onClick={onBack}>
+              <button
+                className="primary-action"
+                type="button"
+                onClick={onArchive}
+              >
                 继续鉴证新的回声 <span aria-hidden="true">↗</span>
               </button>
             </div>
@@ -131,7 +141,11 @@ export function EchoRecordPage({ onBack }: { onBack: () => void }) {
                   完成第一次双身份判断后，这里就会留下你的回声足迹啦
                   ฅ( ̳• ·̫ • ̳ฅ)
                 </p>
-                <button className="text-action" type="button" onClick={onBack}>
+                <button
+                  className="text-action"
+                  type="button"
+                  onClick={onArchive}
+                >
                   先去领取一份档案叭 →
                 </button>
               </div>

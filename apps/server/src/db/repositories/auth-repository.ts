@@ -1,4 +1,4 @@
-import { and, eq, gt, isNull, notInArray } from "drizzle-orm";
+import { and, eq, gt, isNull, notInArray, sql } from "drizzle-orm";
 import { AuthError } from "../../auth/errors.js";
 import type {
   AuthRepository,
@@ -69,7 +69,13 @@ function cloneDate(value: Date): Date {
 }
 
 function mapUser(row: UserRow): AuthUser | undefined {
-  if (!row.emailOriginal || !row.emailCanonical || !row.passwordHash) {
+  if (
+    !row.emailOriginal ||
+    !row.emailCanonical ||
+    !row.passwordHash ||
+    row.playerNumber === null ||
+    !row.displayName
+  ) {
     return undefined;
   }
   return {
@@ -77,6 +83,8 @@ function mapUser(row: UserRow): AuthUser | undefined {
     emailOriginal: row.emailOriginal,
     emailCanonical: row.emailCanonical,
     passwordHash: row.passwordHash,
+    playerNumber: row.playerNumber,
+    displayName: row.displayName,
     nickname: row.nickname,
     typingStatus: row.typingStatus,
     status: DATABASE_STATUS_TO_ACCOUNT[row.status],
@@ -165,6 +173,8 @@ export class PostgresAuthRepository implements AuthRepository {
           emailOriginal: input.emailOriginal ?? input.emailCanonical,
           emailCanonical: input.emailCanonical,
           passwordHash: input.passwordHash,
+          playerNumber: sql<number>`nextval('user_player_number_seq')`,
+          displayName: input.displayName ?? "图灵玩家",
           nickname: input.nickname ?? "新玩家",
           typingStatus: input.typingStatus ?? "",
           status: ACCOUNT_STATUS_TO_DATABASE[input.status],
@@ -218,6 +228,7 @@ export class PostgresAuthRepository implements AuthRepository {
           emailOriginal: user.emailOriginal,
           emailCanonical: user.emailCanonical,
           passwordHash: user.passwordHash,
+          displayName: user.displayName,
           nickname: user.nickname,
           typingStatus: user.typingStatus,
           status: ACCOUNT_STATUS_TO_DATABASE[user.status],

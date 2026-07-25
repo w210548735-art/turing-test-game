@@ -45,6 +45,16 @@ export const AI_RATIO_TARGET = 0.25;
 export const AI_USAGE_ESTIMATED_TOKENS = 2_048;
 const AI_USAGE_ESTIMATED_PROMPT_TOKENS = 1_848;
 const AI_USAGE_MAX_COMPLETION_TOKENS = 200;
+const AI_TEMPORARY_NAMES = [
+  "晚风",
+  "橘子汽水",
+  "纸飞机",
+  "月亮邮差",
+  "薄荷糖",
+  "云朵",
+  "小行星",
+  "雨声",
+] as const;
 
 type GameAiUsageBudget = Pick<AiUsageBudgetService, "reserve" | "settle">;
 
@@ -244,7 +254,7 @@ export class GameService {
       startedAt: room.createdAt,
       endsAt: room.expiresAt,
       minGuessAt: room.createdAt + GUESS_UNLOCK_MS,
-      opponentLabel: `匿名玩家 / ${room.id.slice(0, 2).toUpperCase()}`,
+      opponentLabel: this.opponentTemporaryName(room, session.userId),
     });
   }
 
@@ -885,6 +895,15 @@ export class GameService {
       timelineSequence: 0,
       hadDisconnect: false,
       aiReplyCount: 0,
+      aiTemporaryName:
+        opponentType === "ai"
+          ? AI_TEMPORARY_NAMES[
+              Math.min(
+                AI_TEMPORARY_NAMES.length - 1,
+                Math.floor(this.random() * AI_TEMPORARY_NAMES.length),
+              )
+            ]
+          : undefined,
     };
     this.rooms.set(room.id, room);
     const initialization = this.initializeRoom(room);
@@ -925,7 +944,10 @@ export class GameService {
         startedAt: room.createdAt,
         endsAt: room.expiresAt,
         minGuessAt: room.createdAt + GUESS_UNLOCK_MS,
-        opponentLabel: `匿名玩家 / ${room.id.slice(0, 2).toUpperCase()}`,
+        opponentLabel: this.opponentTemporaryName(
+          room,
+          participant.session.userId,
+        ),
       });
     }
     this.recordMatch(room.opponentType);
@@ -937,6 +959,17 @@ export class GameService {
     room.expiryTimer = this.setTimer(
       () => this.settle(room, "timeout"),
       ROOM_DURATION_MS,
+    );
+  }
+
+  private opponentTemporaryName(room: Room, viewerUserId: string): string {
+    if (room.opponentType === "ai") {
+      return room.aiTemporaryName ?? "匿名玩家";
+    }
+    return (
+      room.participants.find(
+        (participant) => participant.session.userId !== viewerUserId,
+      )?.session.profile.nickname ?? "匿名玩家"
     );
   }
 
@@ -1182,6 +1215,7 @@ export class GameService {
         const rawReply = await this.aiReply({
           messages: room.messages,
           signal: controller.signal,
+          temporaryName: room.aiTemporaryName ?? "晚风",
         });
         const receivedAt = this.now();
         if (room.status !== "active" || controller.signal.aborted) {

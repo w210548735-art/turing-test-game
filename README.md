@@ -13,6 +13,15 @@ npm run dev
 
 浏览器打开 `http://localhost:5173`。后端默认监听 `http://localhost:8787`。
 
+如果只想预览界面和教学对局，不需要启动后端：
+
+```bash
+npm run dev --workspace apps/web
+```
+
+打开 `http://localhost:5173`，在账户入口选择“进入教学模式”。教学模式使用
+模拟对手，不会创建线上会话或进入公共匹配。
+
 账户联调使用被 `.gitignore` 排除的 `.env.qq-smtp.local`，授权码只通过
 `QQ_SMTP_AUTH_CODE_FILE` 指向 `infra/secrets/` 内的只读文件，然后运行：
 
@@ -20,7 +29,7 @@ npm run dev
 npm run dev:account
 ```
 
-该模式开放邮箱注册并关闭线上游客 Session；页面中的“本地演示”仍可离线旁路。
+该模式开放邮箱注册并关闭线上游客 Session；页面中的“教学模式”仍可离线旁路。
 
 DeepSeek 密钥按以下顺序读取：
 

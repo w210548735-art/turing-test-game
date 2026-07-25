@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  accountProfileInputSchema,
+  accountProfileResponseSchema,
   accountSessionResponseSchema,
   accountStatusSchema,
   archiveConsentResponseSchema,
+  changePasswordRequestSchema,
+  changePasswordResponseSchema,
   clientEventSchema,
   echoAssignmentResponseSchema,
   echoCommentLikeResponseSchema,
@@ -327,6 +331,8 @@ describe("共享协议", () => {
       user: {
         id: "7febf16e-48ef-4ef4-8422-edb227b6b7fe",
         email: "player@example.com",
+        playerNumber: 100001,
+        displayName: "图灵玩家",
         status: "ACTIVE",
       },
       csrfToken: "csrf-token-with-safe-length",
@@ -352,6 +358,30 @@ describe("共享协议", () => {
         },
       }).success,
     ).toBe(false);
+  });
+
+  it("严格区分全局账户名称与对局临时资料", () => {
+    expect(
+      accountProfileInputSchema.safeParse({
+        displayName: "夜航观察员",
+      }).success,
+    ).toBe(true);
+    expect(
+      accountProfileInputSchema.safeParse({
+        displayName: "x".repeat(19),
+      }).success,
+    ).toBe(false);
+    expect(
+      accountProfileResponseSchema.safeParse({
+        user: {
+          id: "7febf16e-48ef-4ef4-8422-edb227b6b7fe",
+          email: "player@example.com",
+          playerNumber: 100001,
+          displayName: "夜航观察员",
+          status: "ACTIVE",
+        },
+      }).success,
+    ).toBe(true);
   });
 
   it("校验找回、重置和注销契约", () => {
@@ -382,6 +412,24 @@ describe("共享协议", () => {
     expect(logoutResponseSchema.safeParse({ loggedOut: true }).success).toBe(
       true,
     );
+  });
+
+  it("修改密码必须同时提交当前密码与新密码", () => {
+    expect(
+      changePasswordRequestSchema.safeParse({
+        currentPassword: "Current-Password-2026!",
+        newPassword: "Changed-Password-2027!",
+      }).success,
+    ).toBe(true);
+    expect(
+      changePasswordRequestSchema.safeParse({
+        currentPassword: "Current-Password-2026!",
+        newPassword: "short",
+      }).success,
+    ).toBe(false);
+    expect(
+      changePasswordResponseSchema.safeParse({ changed: true }).success,
+    ).toBe(true);
   });
 
   it("严格校验问题与意见反馈契约", () => {

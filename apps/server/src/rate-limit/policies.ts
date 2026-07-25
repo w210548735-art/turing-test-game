@@ -74,6 +74,16 @@ export const DEFAULT_RATE_LIMIT_POLICIES: RateLimitPolicies = {
       { id: "global-10m", dimension: "global", limit: 2_000, windowMs: 10 * MINUTE },
     ],
   },
+  "account.password.change": {
+    operation: "account.password.change",
+    rules: [
+      { id: "user-10m", dimension: "user", limit: 5, windowMs: 10 * MINUTE, required: true },
+      { id: "session-10m", dimension: "session", limit: 5, windowMs: 10 * MINUTE, required: true },
+      { id: "device-1h", dimension: "device", limit: 10, windowMs: HOUR, required: true },
+      { id: "ip-1h", dimension: "ip", limit: 20, windowMs: HOUR, required: true },
+      { id: "global-1h", dimension: "global", limit: 1_000, windowMs: HOUR },
+    ],
+  },
   "match.join": {
     operation: "match.join",
     rules: [

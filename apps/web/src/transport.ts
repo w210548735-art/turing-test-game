@@ -1,5 +1,9 @@
 import {
+  accountProfileInputSchema,
+  accountProfileResponseSchema,
   accountSessionResponseSchema,
+  changePasswordRequestSchema,
+  changePasswordResponseSchema,
   forgotPasswordRequestSchema,
   forgotPasswordResponseSchema,
   loginAccountRequestSchema,
@@ -15,6 +19,8 @@ import {
   verifyEmailRequestSchema,
   verifyEmailResponseSchema,
   type AccountSessionResponse,
+  type AccountProfileInput,
+  type ChangePasswordRequest,
   type ClientEvent,
   type ForgotPasswordRequest,
   type FeedbackCategory,
@@ -29,7 +35,9 @@ import {
 } from "@turing-game/protocol";
 
 export type {
+  AccountProfileInput,
   AccountSessionResponse,
+  ChangePasswordRequest,
   ClientEvent,
   FeedbackCategory,
   ProfileInput,
@@ -234,6 +242,28 @@ export async function resetAccountPassword(
   return resetPasswordResponseSchema.parse(await response.json());
 }
 
+export async function changeAccountPassword(
+  csrfToken: string,
+  input: ChangePasswordRequest,
+): Promise<ReturnType<typeof changePasswordResponseSchema.parse>> {
+  const validatedInput = parseAccountInput(
+    changePasswordRequestSchema.safeParse(input),
+  );
+  const response = await fetch(`${API_BASE}/api/auth/password/change`, {
+    method: "PUT",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": csrfToken,
+    },
+    body: JSON.stringify(validatedInput),
+  });
+  if (!response.ok) {
+    throw new Error(await parseError(response));
+  }
+  return changePasswordResponseSchema.parse(await response.json());
+}
+
 export async function logoutAccount(
   csrfToken: string,
 ): Promise<ReturnType<typeof logoutResponseSchema.parse>> {
@@ -279,6 +309,26 @@ export async function saveProfile(
   if (!response.ok) {
     throw new Error(await parseError(response));
   }
+}
+
+export async function saveAccountProfile(
+  csrfToken: string,
+  input: AccountProfileInput,
+): Promise<AccountSessionResponse["user"]> {
+  const validatedInput = accountProfileInputSchema.parse(input);
+  const response = await fetch(`${API_BASE}/api/account/profile`, {
+    method: "PUT",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": csrfToken,
+    },
+    body: JSON.stringify(validatedInput),
+  });
+  if (!response.ok) {
+    throw new Error(await parseError(response));
+  }
+  return accountProfileResponseSchema.parse(await response.json()).user;
 }
 
 async function requestWsTicket(csrfToken: string): Promise<string> {
@@ -431,12 +481,19 @@ const DEMO_REPLIES = [
   "这问题太像陷阱了。不过真人也会故意把答案说得像模型，对吧？",
   "我更好奇：你现在已经有答案了，还是还在收集证据？",
 ];
+const DEMO_AI_TEMPORARY_NAMES = [
+  "晚风",
+  "纸飞机",
+  "月亮邮差",
+  "薄荷糖",
+] as const;
 
 export class DemoTransport implements GameTransport {
   private timers = new Set<number>();
   private sequence = 0;
   private replyIndex = 0;
   private opponentType: Identity = Math.random() < 0.25 ? "ai" : "human";
+  private opponentTemporaryName = "匿名玩家 / 07";
 
   constructor(private readonly callbacks: TransportCallbacks) {}
 
@@ -513,6 +570,12 @@ export class DemoTransport implements GameTransport {
     this.sequence = 0;
     this.replyIndex = 0;
     this.opponentType = Math.random() < 0.25 ? "ai" : "human";
+    this.opponentTemporaryName =
+      this.opponentType === "ai"
+        ? DEMO_AI_TEMPORARY_NAMES[
+            Math.floor(Math.random() * DEMO_AI_TEMPORARY_NAMES.length)
+          ] ?? "晚风"
+        : "匿名玩家 / 07";
     this.callbacks.onEvent({
       type: "match.searching",
       searchStartedAt: Date.now(),
@@ -542,7 +605,7 @@ export class DemoTransport implements GameTransport {
         startedAt,
         endsAt: startedAt + 5 * 60_000,
         minGuessAt: startedAt + 20_000,
-        opponentLabel: "匿名玩家 / 07",
+        opponentLabel: this.opponentTemporaryName,
       });
     }, 10_000);
   }

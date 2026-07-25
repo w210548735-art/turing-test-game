@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   bootstrapAccount,
+  changeAccountPassword,
   DemoTransport,
   forgotAccountPassword,
   loginAccount,
   logoutAccount,
   registerAccount,
   resetAccountPassword,
+  saveAccountProfile,
   saveProfile,
   verifyAccountEmail,
 } from "./transport";
@@ -16,10 +18,11 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("本地演示匹配", () => {
+describe("教学模式匹配", () => {
   it("依次经过寻找对手和五秒入场后才进入房间", () => {
     vi.useFakeTimers();
     vi.stubGlobal("window", globalThis);
+    vi.spyOn(Math, "random").mockReturnValue(0);
     const events: Array<{ type: string }> = [];
     const transport = new DemoTransport({
       onEvent: (event) => events.push(event),
@@ -41,6 +44,9 @@ describe("本地演示匹配", () => {
 
     vi.advanceTimersByTime(5_000);
     expect(events.at(-1)?.type).toBe("match.found");
+    expect(
+      (events.at(-1) as { opponentLabel?: string }).opponentLabel,
+    ).toBe("晚风");
   });
 });
 
@@ -179,6 +185,8 @@ describe("账户传输", () => {
           user: {
             id: "0d602197-3770-4b3e-8222-705ba000b7fa",
             email: "member@example.com",
+            playerNumber: 100001,
+            displayName: "图灵玩家",
             status: "ACTIVE",
           },
           csrfToken: "csrf-token-with-enough-entropy",
@@ -201,6 +209,64 @@ describe("账户传输", () => {
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(init.credentials).toBe("include");
     expect(init.headers).not.toHaveProperty("Authorization");
+  });
+
+  it("更新全局账户名称时不会发送 1v1 临时资料", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          user: {
+            id: "0d602197-3770-4b3e-8222-705ba000b7fa",
+            email: "member@example.com",
+            playerNumber: 100001,
+            displayName: "夜航观察员",
+            status: "ACTIVE",
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const user = await saveAccountProfile(
+      "csrf-token-with-enough-entropy",
+      { displayName: "夜航观察员" },
+    );
+
+    expect(user.displayName).toBe("夜航观察员");
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/api/account/profile");
+    expect(JSON.parse(String(init.body))).toEqual({
+      displayName: "夜航观察员",
+    });
+  });
+
+  it("修改密码携带当前密码、新密码、Cookie 与 CSRF", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ changed: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await changeAccountPassword("csrf-token-with-enough-entropy", {
+      currentPassword: "Current-Password-2026!",
+      newPassword: "New-Password-2027!",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/api/auth/password/change");
+    expect(init.method).toBe("PUT");
+    expect(init.credentials).toBe("include");
+    expect(init.headers).toMatchObject({
+      "Content-Type": "application/json",
+      "X-CSRF-Token": "csrf-token-with-enough-entropy",
+    });
+    expect(JSON.parse(String(init.body))).toEqual({
+      currentPassword: "Current-Password-2026!",
+      newPassword: "New-Password-2027!",
+    });
   });
 
   it("bootstrap 的 401 表示没有可恢复会话", async () => {

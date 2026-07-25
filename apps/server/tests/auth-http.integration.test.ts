@@ -140,11 +140,18 @@ describe("账户认证 HTTP 路由", () => {
     const loginBody = login.json<{
       authenticated: true;
       csrfToken: string;
-      user: { email: string; status: string };
+      user: {
+        email: string;
+        playerNumber: number;
+        displayName: string;
+        status: string;
+      };
       wsTicket: string;
     }>();
     assert.equal(loginBody.authenticated, true);
     assert.equal(loginBody.user.email, email);
+    assert.ok(loginBody.user.playerNumber >= 100_001);
+    assert.equal(loginBody.user.displayName, "图灵玩家");
     assert.equal(loginBody.user.status, "ACTIVE");
     assert.equal(typeof loginBody.wsTicket, "string");
     assert.equal(
@@ -168,6 +175,54 @@ describe("账户认证 HTTP 路由", () => {
     });
     assert.equal(profile.statusCode, 200);
 
+    const accountProfile = await context.app.inject({
+      method: "PUT",
+      url: "/api/account/profile",
+      headers: {
+        origin: TEST_ORIGIN,
+        cookie: firstCookies,
+        "x-csrf-token": loginBody.csrfToken,
+      },
+      payload: {
+        displayName: "夜航观察员",
+      },
+    });
+    assert.equal(accountProfile.statusCode, 200);
+    assert.deepEqual(accountProfile.json(), {
+      user: {
+        id: accountProfile.json().user.id,
+        email,
+        playerNumber: loginBody.user.playerNumber,
+        displayName: "夜航观察员",
+        status: "ACTIVE",
+      },
+    });
+
+    const changedPassword = "Intermediate-Password-2027!";
+    const passwordChange = await context.app.inject({
+      method: "PUT",
+      url: "/api/auth/password/change",
+      headers: {
+        origin: TEST_ORIGIN,
+        cookie: firstCookies,
+        "x-csrf-token": loginBody.csrfToken,
+      },
+      payload: {
+        currentPassword: oldPassword,
+        newPassword: changedPassword,
+      },
+    });
+    assert.equal(passwordChange.statusCode, 200);
+    assert.deepEqual(passwordChange.json(), { changed: true });
+
+    const rejectedOldPassword = await context.app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      headers: { origin: TEST_ORIGIN },
+      payload: { email, password: oldPassword },
+    });
+    assert.equal(rejectedOldPassword.statusCode, 401);
+
     const bootstrap = await context.app.inject({
       method: "POST",
       url: "/api/auth/bootstrap",
@@ -177,8 +232,19 @@ describe("账户认证 HTTP 路由", () => {
       },
     });
     assert.equal(bootstrap.statusCode, 200);
-    const bootstrapBody = bootstrap.json<{ csrfToken: string }>();
+    const bootstrapBody = bootstrap.json<{
+      csrfToken: string;
+      user: {
+        playerNumber: number;
+        displayName: string;
+      };
+    }>();
     assert.notEqual(bootstrapBody.csrfToken, loginBody.csrfToken);
+    assert.equal(
+      bootstrapBody.user.playerNumber,
+      loginBody.user.playerNumber,
+    );
+    assert.equal(bootstrapBody.user.displayName, "夜航观察员");
     const rotatedCookies = cookieHeader(bootstrap.headers["set-cookie"]);
     assert.notEqual(rotatedCookies, firstCookies);
 

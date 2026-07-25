@@ -16,6 +16,7 @@ export type RateLimitOperation =
   | "email.verification.consume"
   | "email.password_reset.send"
   | "email.password_reset.consume"
+  | "account.password.change"
   | "match.join"
   | "match.cancel"
   | "chat.send"

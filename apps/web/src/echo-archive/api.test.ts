@@ -88,6 +88,54 @@ describe("回声档案 API", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("双身份与各自置信度会一起提交并解析结算结果", async () => {
+    const responseBody = {
+      completed: true,
+      identities: { A: "human", B: "ai" },
+      correct: { A: true, B: true },
+      correctCount: 2,
+      bothCorrect: true,
+      scoreDelta: 10,
+      confidenceCalibration: 72,
+      stats: {
+        reviewsPlayed: 6,
+        identitiesCorrect: 9,
+        perfectJudgments: 3,
+        score: 38,
+      },
+    };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(responseBody), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      submitEchoJudgment(CSRF, ASSIGNMENT_ID, {
+        guessA: "human",
+        confidenceA: 68,
+        guessB: "ai",
+        confidenceB: 76,
+        clientRequestId: REQUEST_ID,
+      }),
+    ).resolves.toEqual(responseBody);
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`/api/echo/assignments/${ASSIGNMENT_ID}/judgment`);
+    expect(init.method).toBe("POST");
+    expect(init.credentials).toBe("include");
+    expect(new Headers(init.headers).get("X-CSRF-Token")).toBe(CSRF);
+    expect(JSON.parse(String(init.body))).toEqual({
+      guessA: "human",
+      confidenceA: 68,
+      guessB: "ai",
+      confidenceB: 76,
+      clientRequestId: REQUEST_ID,
+    });
+  });
+
   it("完成判读后的批注读取使用独立 GET 且不发送 CSRF", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(

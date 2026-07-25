@@ -150,6 +150,7 @@ describe("默认策略", () => {
     for (const operation of [
       "auth.login",
       "auth.register",
+      "account.password.change",
       "email.verification.send",
       "email.password_reset.send",
       "match.join",

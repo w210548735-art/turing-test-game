@@ -34,8 +34,10 @@ import {
 } from "./typing-heartbeat";
 import { ArchiveConsentDialog } from "./echo-archive/ArchiveConsentDialog";
 import { EchoArchivePage } from "./echo-archive/EchoArchivePage";
+import { EchoRecordPage } from "./echo-archive/EchoRecordPage";
 import {
   bootstrapAccount,
+  changeAccountPassword,
   DemoTransport,
   forgotAccountPassword,
   loginAccount,
@@ -46,6 +48,7 @@ import {
   registerAccount,
   resetAccountPassword,
   saveProfile,
+  saveAccountProfile,
   submitAccountFeedback,
   type ServerEvent,
   type FeedbackCategory,
@@ -68,9 +71,11 @@ const MATCH_SEARCH_MESSAGES = [
 const BILIBILI_SPACE_URL =
   "https://space.bilibili.com/485008770?spm_id_from=333.1007.0.0";
 const DOUYIN_SPACE_URL = "https://v.douyin.com/l_xBqIYez08/";
+const GITHUB_PROJECT_URL =
+  "https://github.com/w210548735-art/turing-test-game";
 
 type AuthMode = "login" | "register" | "forgot" | "reset" | "verify";
-type ActiveView = "game" | "record" | "echo";
+type ActiveView = "game" | "record" | "echo" | "echo-record";
 
 interface InitialAuthRoute {
   mode: AuthMode;
@@ -156,6 +161,7 @@ export default function App() {
   const [confidence, setConfidence] = useState(68);
   const [reportOpen, setReportOpen] = useState(false);
   const [leaveOpen, setLeaveOpen] = useState(false);
+  const [logoutOpen, setLogoutOpen] = useState(false);
   const [activeView, setActiveView] = useState<ActiveView>("game");
   const [archiveConsentGameId, setArchiveConsentGameId] =
     useState<string | null>(null);
@@ -584,12 +590,42 @@ export default function App() {
       dispatch({ type: "RESET_ALL" });
       setAuthMode("login");
       setAuthMessage("已安全退出当前会话。");
+      setLogoutOpen(false);
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : "退出失败。");
+      setLogoutOpen(false);
     } finally {
       setAuthBusy(false);
     }
   }, [accountSession]);
+
+  const handleDisplayNameSave = useCallback(
+    async (displayName: string) => {
+      if (!accountSession) {
+        throw new Error("请先登录账户，再修改全局名称。");
+      }
+      const user = await saveAccountProfile(accountSession.csrfToken, {
+        displayName,
+      });
+      setAccountSession((current) =>
+        current ? { ...current, user } : current,
+      );
+    },
+    [accountSession],
+  );
+
+  const handleChangePassword = useCallback(
+    async (currentPassword: string, newPassword: string) => {
+      if (!accountSession) {
+        throw new Error("请先登录账户，再修改密码。");
+      }
+      await changeAccountPassword(accountSession.csrfToken, {
+        currentPassword,
+        newPassword,
+      });
+    },
+    [accountSession],
+  );
 
   async function handleFeedbackSubmit(input: {
     category: FeedbackCategory;
@@ -681,8 +717,8 @@ export default function App() {
           type: "ERROR",
           message:
             error instanceof Error
-              ? `${error.message} 你可以切换到本地演示继续体验。`
-              : "启动失败，你可以切换到本地演示继续体验。",
+              ? `${error.message} 你可以切换到教学模式继续体验。`
+              : "启动失败，你可以切换到教学模式继续体验。",
         });
       } finally {
         setIsStarting(false);
@@ -865,7 +901,7 @@ export default function App() {
   const guessReady = canSubmitGuess(state, now);
 
   const connectionLabel = useMemo(() => {
-    if (state.demoMode) return "LOCAL DEMO";
+    if (state.demoMode) return "TEACHING";
     if (state.connection === "connected") return "LIVE";
     if (state.connection === "connecting") return "CONNECTING";
     if (state.connection === "disconnected") return "OFFLINE";
@@ -894,16 +930,31 @@ export default function App() {
               onClick={() => setActiveView("record")}
             >
               <span>账户数据</span>
-              <strong>{String(localRecord.rounds).padStart(2, "0")} 局</strong>
-              <strong>{hitRate(localRecord)}%</strong>
+              <strong className="header-player-name">
+                {accountSession?.user.displayName || "教学模式"}
+              </strong>
+              <strong className="header-player-record">
+                {String(localRecord.rounds).padStart(2, "0")} 局 ·{" "}
+                {hitRate(localRecord)}%
+              </strong>
             </button>
+          )}
+          {!showAccountAccess &&
+            activeView === "game" &&
+            accountSession &&
+            state.screen !== "onboarding" &&
+            state.screen !== "finished" && (
+            <div className="header-account-label">
+              <strong>{accountSession.user.displayName}</strong>
+              <span>NO. {accountSession.user.playerNumber}</span>
+            </div>
           )}
           {accountSession && (
             <button
               className="header-logout"
               type="button"
               disabled={authBusy}
-              onClick={() => void handleLogout()}
+              onClick={() => setLogoutOpen(true)}
             >
               退出
             </button>
@@ -974,8 +1025,12 @@ export default function App() {
         {!showAccountAccess && activeView === "record" && (
           <AccountRecordPage
             record={localRecord}
-            accountEmail={accountSession?.user.email}
+            accountUser={accountSession?.user}
+            echoEnabled={Boolean(accountSession)}
             onBack={() => setActiveView("game")}
+            onEchoRecords={() => setActiveView("echo-record")}
+            onSaveDisplayName={handleDisplayNameSave}
+            onChangePassword={handleChangePassword}
             onCreator={() => setCreatorOpen(true)}
             onSupport={() => setSupportOpen(true)}
             onFeedback={() => {
@@ -992,6 +1047,16 @@ export default function App() {
           <EchoArchivePage
             csrfToken={accountSession.csrfToken}
             onBack={() => setActiveView("game")}
+            onOpenRecords={() => setActiveView("echo-record")}
+          />
+        )}
+
+        {!showAccountAccess &&
+          activeView === "echo-record" &&
+          accountSession && (
+          <EchoRecordPage
+            onBack={() => setActiveView("record")}
+            onArchive={() => setActiveView("echo")}
           />
         )}
 
@@ -1001,7 +1066,12 @@ export default function App() {
             thinkingStatus={thinkingStatus}
             isStarting={isStarting}
             onlineEnabled={Boolean(accountSession)}
-            accountEmail={accountSession?.user.email}
+            tutorialMode={!accountSession && localDemoBypass}
+            accountIdentity={
+              accountSession
+                ? `${accountSession.user.displayName} · NO. ${accountSession.user.playerNumber}`
+                : undefined
+            }
             onNicknameChange={setNickname}
             onThinkingStatusChange={setThinkingStatus}
             onSubmit={submitProfile}
@@ -1060,6 +1130,7 @@ export default function App() {
             guessReady={guessReady}
             guessSubmitted={state.guessSubmitted}
             reportConfirmed={state.reportConfirmed}
+            tutorialMode={state.demoMode}
             messagesEndRef={messagesEndRef}
             onMessageChange={updateMessageDraft}
             onMessageSubmit={submitMessage}
@@ -1079,6 +1150,7 @@ export default function App() {
             result={state.result}
             nickname={state.nickname}
             messageCount={state.messages.length}
+            tutorialMode={state.demoMode}
             onAgain={playAgain}
             onHome={leaveGame}
           />
@@ -1139,6 +1211,14 @@ export default function App() {
           csrfToken={accountSession.csrfToken}
           gameId={archiveConsentGameId}
           onClose={() => setArchiveConsentGameId(null)}
+        />
+      )}
+
+      {logoutOpen && accountSession && (
+        <LogoutConfirmDialog
+          busy={authBusy}
+          onCancel={() => setLogoutOpen(false)}
+          onConfirm={() => void handleLogout()}
         />
       )}
     </div>
@@ -1393,11 +1473,13 @@ function AccountAccess({
         )}
 
         <div className="demo-bypass">
-          <span>NO ACCOUNT / LOCAL ONLY</span>
+          <span>NO ACCOUNT / GUIDED TOUR</span>
           <button type="button" disabled={busy} onClick={onLocalDemo}>
-            进入本地演示 →
+            进入教学模式 →
           </button>
-          <p>本地演示不会创建线上游客会话，也不会连接公共匹配。</p>
+          <p>
+            教学模式不会创建线上会话，由模拟对手陪你走完匹配、聊天和判断流程。
+          </p>
         </div>
       </div>
     </section>
@@ -1409,7 +1491,8 @@ interface OnboardingProps {
   thinkingStatus: string;
   isStarting: boolean;
   onlineEnabled: boolean;
-  accountEmail?: string;
+  tutorialMode: boolean;
+  accountIdentity?: string;
   onNicknameChange: (value: string) => void;
   onThinkingStatusChange: (value: string) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
@@ -1417,12 +1500,39 @@ interface OnboardingProps {
   onEcho: () => void;
 }
 
-function Onboarding({
+export function TutorialCallout({
+  step,
+  title,
+  children,
+  compact = false,
+}: {
+  step: string;
+  title: string;
+  children: string;
+  compact?: boolean;
+}) {
+  return (
+    <aside
+      className={`tutorial-callout${compact ? " is-compact" : ""}`}
+      role="note"
+    >
+      <span>教学 {step}</span>
+      <div>
+        <strong>{title}</strong>
+        <p>{children}</p>
+      </div>
+      <i aria-hidden="true">↘</i>
+    </aside>
+  );
+}
+
+export function Onboarding({
   nickname,
   thinkingStatus,
   isStarting,
   onlineEnabled,
-  accountEmail,
+  tutorialMode,
+  accountIdentity,
   onNicknameChange,
   onThinkingStatusChange,
   onSubmit,
@@ -1439,7 +1549,7 @@ function Onboarding({
           是<span>谁</span>？
         </h1>
         <p className="hero-description">
-          和一位匿名对象对话。观察停顿、措辞和破绽，然后作出唯一一次判断：
+          和一位匿名玩家对话。观察停顿、措辞和破绽，然后作出唯一一次判断：
           <strong> 真人，还是 AI。</strong>
         </p>
         <div className="hero-rules" aria-label="游戏规则">
@@ -1456,8 +1566,16 @@ function Onboarding({
         <div className="panel-heading">
           <p>ENTER THE ROOM</p>
           <h2>设定你的公开身份</h2>
-          {accountEmail && <span className="signed-in-as">{accountEmail}</span>}
+          {accountIdentity && (
+            <span className="signed-in-as">{accountIdentity}</span>
+          )}
         </div>
+
+        {tutorialMode && (
+          <TutorialCallout step="01" title="先起一个本局名字">
+            这是只在本局展示的临时名称，不会暴露你的账户名称或邮箱。
+          </TutorialCallout>
+        )}
 
         <div className="identity-preview" aria-label="公开身份预览">
           <div>
@@ -1468,8 +1586,8 @@ function Onboarding({
           <p>{thinkingStatus.trim() || "正在等待一个念头…"}</p>
         </div>
 
-        <label className="field">
-          <span>昵称 / NICKNAME</span>
+        <label className={`field${tutorialMode ? " tutorial-ring" : ""}`}>
+          <span>本局临时名称 / MATCH NAME</span>
           <input
             autoFocus
             type="text"
@@ -1481,6 +1599,7 @@ function Onboarding({
             onChange={(event) => onNicknameChange(event.target.value)}
           />
           <small>{nickname.length}/18</small>
+          <em>只在本局匿名对话中展示，与右上角账户名称分开。</em>
         </label>
 
         <label className="field">
@@ -1522,13 +1641,13 @@ function Onboarding({
             <span aria-hidden="true">↗</span>
           </button>
           <button
-            className="demo-action"
+            className={`demo-action${tutorialMode ? " tutorial-ring" : ""}`}
             type="button"
             disabled={isStarting}
             onClick={onDemo}
           >
-            <span>本地演示</span>
-            <small>无需账户 · 约 5 分钟</small>
+            <span>{tutorialMode ? "开始教学对局" : "教学模式"}</span>
+            <small>无需账户 · 分步引导 · 约 5 分钟</small>
           </button>
         </div>
 
@@ -1574,11 +1693,11 @@ function MatchingActions({
     <div className="matching-actions">
       {hasError && !demoMode && (
         <button className="primary-action compact" type="button" onClick={onDemo}>
-          切换本地演示 <span aria-hidden="true">↗</span>
+          切换教学模式 <span aria-hidden="true">↗</span>
         </button>
       )}
       <button className="text-action" type="button" onClick={onCancel}>
-        取消匹配
+        ← 返回并取消匹配
       </button>
     </div>
   );
@@ -1653,7 +1772,7 @@ function SearchMatching({
     <section className="matching-screen phase-screen search-screen">
       <div className="matching-meta">
         <span>OPPONENT SEARCH</span>
-        <span>{demoMode ? "本地演示通道" : "匿名公共通道"}</span>
+        <span>{demoMode ? "教学模式通道" : "匿名公共通道"}</span>
       </div>
       <div className="matching-core phase-core">
         <div className="search-orbit" aria-hidden="true">
@@ -1671,6 +1790,11 @@ function SearchMatching({
           <p className="search-message" role="status" aria-live="polite">
             {message}
           </p>
+          {demoMode && (
+            <TutorialCallout step="02" title="先经历完整匹配" compact>
+              即使模拟对手已经就位，也会等待至少 5 秒；线上真人匹配遵循同样节奏。
+            </TutorialCallout>
+          )}
         </div>
       </div>
       <div className="search-status">
@@ -1717,14 +1841,14 @@ function AdmissionGate({
       : progressPercent < 55
         ? "同步匿名身份"
         : progressPercent < 90
-          ? "等待对象确认"
+          ? "等待对手确认"
           : "锁定对话房间";
 
   return (
     <section className="matching-screen">
       <div className="matching-meta">
         <span>ROOM CONNECTION</span>
-        <span>{demoMode ? "本地演示通道" : "匿名公共通道"}</span>
+        <span>{demoMode ? "教学模式通道" : "匿名公共通道"}</span>
       </div>
       <div className="matching-core">
         <div className="matching-count" aria-live="polite">
@@ -1735,13 +1859,20 @@ function AdmissionGate({
         <div>
           <p className="eyebrow">PLAYER / {nickname.toUpperCase()}</p>
           <h1>
-            等待对象
+            等待对手
             <br />
             <span>进入房间</span>
           </h1>
+          {demoMode && (
+            <TutorialCallout step="03" title="观察统一入场" compact>
+              这段固定 5 秒的入场倒计时不会透露对手是真人还是 AI。
+            </TutorialCallout>
+          )}
         </div>
       </div>
-      <div className="calibration">
+      <div
+        className={`calibration${demoMode ? " tutorial-ring tutorial-ring-wide" : ""}`}
+      >
         <div className="calibration-label">
           <span>{connectionStage}</span>
           <span>{progressPercent}%</span>
@@ -1756,7 +1887,7 @@ function AdmissionGate({
           <div style={{ transform: `scaleX(${progress})` }} />
         </div>
         <div className="connection-steps" aria-hidden="true">
-          {["安全通道", "匿名身份", "对象确认", "房间锁定"].map(
+          {["安全通道", "匿名身份", "对手确认", "房间锁定"].map(
             (label, index) => (
               <span
                 key={label}
@@ -1793,6 +1924,7 @@ interface ChatRoomProps {
   guessReady: boolean;
   guessSubmitted: GuessTarget | null;
   reportConfirmed: boolean;
+  tutorialMode: boolean;
   messagesEndRef: RefObject<HTMLDivElement | null>;
   onMessageChange: (value: string) => void;
   onMessageSubmit: (event: FormEvent<HTMLFormElement>) => void;
@@ -1803,7 +1935,7 @@ interface ChatRoomProps {
   onLeave: () => void;
 }
 
-function ChatRoom({
+export function ChatRoom({
   nickname,
   opponentLabel,
   openingQuestions,
@@ -1817,6 +1949,7 @@ function ChatRoom({
   guessReady,
   guessSubmitted,
   reportConfirmed,
+  tutorialMode,
   messagesEndRef,
   onMessageChange,
   onMessageSubmit,
@@ -1857,7 +1990,7 @@ function ChatRoom({
         </dl>
         <div className="sidebar-actions">
           <button
-            className="guess-action"
+            className={`guess-action${tutorialMode ? " is-tutorial tutorial-ring" : ""}`}
             type="button"
             disabled={!guessReady || Boolean(guessSubmitted)}
             onClick={onGuess}
@@ -1872,6 +2005,11 @@ function ChatRoom({
               />
             )}
             <span>
+              {tutorialMode && (
+                <small className="tutorial-button-label">
+                  教学 06 · 最后在这里判断
+                </small>
+              )}
               {guessSubmitted
                 ? "判断已锁定"
                 : guessReady
@@ -1914,9 +2052,17 @@ function ChatRoom({
           {messages.length === 0 && (
             <div className="conversation-empty">
               <span className="empty-index">NO SIGNAL / START WITH A QUESTION</span>
+              {tutorialMode && (
+                <TutorialCallout step="04" title="点一个问题试试" compact>
+                  系统每局会随机抽出 3 道题。点击后会自动填入输入框，你仍可以继续修改。
+                </TutorialCallout>
+              )}
               <h2>别从“你好”开始。</h2>
               <p>选择一个不容易被模板回答的问题，观察对方如何犹豫。</p>
-              <div className="opening-questions" aria-label="开场问题建议">
+              <div
+                className={`opening-questions${tutorialMode ? " tutorial-ring tutorial-ring-questions" : ""}`}
+                aria-label="开场问题建议"
+              >
                 {openingQuestions.map((question, index) => (
                   <button
                     key={question}
@@ -1967,10 +2113,19 @@ function ChatRoom({
           <div ref={messagesEndRef} />
         </div>
 
-        <form className="composer" onSubmit={onMessageSubmit}>
+        <form
+          className={`composer${tutorialMode ? " tutorial-ring tutorial-ring-composer" : ""}`}
+          onSubmit={onMessageSubmit}
+        >
           <div className="composer-heading">
             <label htmlFor="message">你的消息</label>
-            <span>{guessSubmitted ? "CONVERSATION LOCKED" : "ENCRYPTED CHANNEL"}</span>
+            <span className={tutorialMode ? "tutorial-composer-note" : undefined}>
+              {tutorialMode && !guessSubmitted
+                ? "教学 05 · 写好后点发送 ↘"
+                : guessSubmitted
+                  ? "CONVERSATION LOCKED"
+                  : "ENCRYPTED CHANNEL"}
+            </span>
           </div>
           <textarea
             id="message"
@@ -2196,21 +2351,150 @@ function ConfirmDialog({
   );
 }
 
-function AccountRecordPage({
+export function LogoutConfirmDialog({
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  useEscapeToClose(busy ? () => undefined : onCancel);
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <dialog
+        className="modal confirm-modal"
+        open
+        aria-modal="true"
+        aria-labelledby="logout-title"
+      >
+        <p className="eyebrow">SIGN OUT / ACCOUNT</p>
+        <h2 id="logout-title">确定退出当前账号？</h2>
+        <p className="modal-lead">
+          退出后需要重新登录，正在进行的匹配或对局也会结束。
+        </p>
+        <div className="modal-actions">
+          <button
+            className="danger-action"
+            type="button"
+            disabled={busy}
+            onClick={onConfirm}
+          >
+            {busy ? "正在退出…" : "退出当前账号"}
+          </button>
+          <button
+            autoFocus
+            className="text-action"
+            type="button"
+            disabled={busy}
+            onClick={onCancel}
+          >
+            继续留在这里
+          </button>
+        </div>
+      </dialog>
+    </div>
+  );
+}
+
+export function AccountRecordPage({
   record,
-  accountEmail,
+  accountUser,
+  echoEnabled,
   onBack,
+  onEchoRecords,
+  onSaveDisplayName,
+  onChangePassword,
   onCreator,
   onSupport,
   onFeedback,
 }: {
   record: LocalPlayerRecord;
-  accountEmail?: string;
+  accountUser?: AccountSessionResponse["user"];
+  echoEnabled: boolean;
   onBack: () => void;
+  onEchoRecords: () => void;
+  onSaveDisplayName: (displayName: string) => Promise<void>;
+  onChangePassword: (
+    currentPassword: string,
+    newPassword: string,
+  ) => Promise<void>;
   onCreator: () => void;
   onSupport: () => void;
   onFeedback: () => void;
 }) {
+  const [displayName, setDisplayName] = useState(
+    accountUser?.displayName ?? "",
+  );
+  const [nameBusy, setNameBusy] = useState(false);
+  const [nameError, setNameError] = useState<string | null>(null);
+  const [nameMessage, setNameMessage] = useState<string | null>(null);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [passwordConfirmation, setPasswordConfirmation] = useState("");
+  const [passwordBusy, setPasswordBusy] = useState(false);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [passwordMessage, setPasswordMessage] = useState<string | null>(
+    null,
+  );
+
+  useEffect(() => {
+    setDisplayName(accountUser?.displayName ?? "");
+  }, [accountUser?.displayName]);
+
+  async function submitDisplayName(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const nextName = displayName.trim();
+    if (!accountUser || nameBusy || nextName.length < 2) return;
+    setNameBusy(true);
+    setNameError(null);
+    setNameMessage(null);
+    try {
+      await onSaveDisplayName(nextName);
+      setDisplayName(nextName);
+      setNameMessage("全局名称已经保存好啦 ( •̀ ω •́ )✧");
+    } catch (error) {
+      setNameError(
+        error instanceof Error
+          ? error.message
+          : "名称没有保存成功，请稍后重试。",
+      );
+    } finally {
+      setNameBusy(false);
+    }
+  }
+
+  async function submitPasswordChange(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (passwordBusy) return;
+    if (newPassword !== passwordConfirmation) {
+      setPasswordMessage(null);
+      setPasswordError("两次输入的新密码不一致。");
+      return;
+    }
+    setPasswordBusy(true);
+    setPasswordError(null);
+    setPasswordMessage(null);
+    try {
+      await onChangePassword(currentPassword, newPassword);
+      setCurrentPassword("");
+      setNewPassword("");
+      setPasswordConfirmation("");
+      setPasswordMessage(
+        "密码修改成功啦，其他设备的登录会话已经退出 ( •̀ ω •́ )✧",
+      );
+    } catch (error) {
+      setPasswordError(
+        error instanceof Error
+          ? error.message
+          : "密码没有修改成功，请稍后重试。",
+      );
+    } finally {
+      setPasswordBusy(false);
+    }
+  }
+
   return (
     <section className="record-page">
       <div className="record-page-heading">
@@ -2218,17 +2502,155 @@ function AccountRecordPage({
           ← 返回实验
         </button>
         <div>
-          <p>PLAYER FILE / LOCAL RECORD</p>
-          <h1>对局记录</h1>
-          <span>{accountEmail || "本地演示身份"}</span>
+          <p>PLAYER FILE / ACCOUNT DATA</p>
+          <h1>账户数据</h1>
+          <span>
+            {accountUser
+              ? `${accountUser.displayName} · NO. ${accountUser.playerNumber}`
+              : "教学模式身份"}
+          </span>
         </div>
         <p>
-          每次判断都会留下一个观察切片。当前记录仅保存在这台设备，
-          不会跨浏览器同步。
+          在这里切换查看 1v1 对局与回声鉴证战绩。普通对局当前保存在本机，
+          回声档案由登录账户在云端同步。
         </p>
       </div>
 
+      <nav className="record-mode-switcher" aria-label="战绩模式">
+        <button className="is-active" type="button" aria-current="page">
+          <strong>1v1 对局</strong>
+          <span>本机判断记录</span>
+        </button>
+        <button
+          type="button"
+          disabled={!echoEnabled}
+          onClick={onEchoRecords}
+        >
+          <strong>回声档案</strong>
+          <span>{echoEnabled ? "云端鉴证记录" : "登录后查看"}</span>
+          <i aria-hidden="true">↗</i>
+        </button>
+      </nav>
+
       <div className="record-overview">
+        {accountUser ? (
+          <>
+            <form
+              className="account-identity-card"
+              onSubmit={(event) => void submitDisplayName(event)}
+            >
+              <div>
+                <span>GLOBAL IDENTITY / ACCOUNT</span>
+                <strong>NO. {accountUser.playerNumber}</strong>
+              </div>
+              <label>
+                <span>全局账户名称</span>
+                <input
+                  type="text"
+                  value={displayName}
+                  minLength={2}
+                  maxLength={18}
+                  autoComplete="nickname"
+                  onChange={(event) => setDisplayName(event.target.value)}
+                />
+              </label>
+              <button
+                className="text-action"
+                type="submit"
+                disabled={
+                  nameBusy ||
+                  displayName.trim().length < 2 ||
+                  displayName.trim() === accountUser.displayName
+                }
+              >
+                {nameBusy ? "保存中…" : "保存账户名称 →"}
+              </button>
+              <p>
+                这个名称显示在你的账户页和右上角；1v1 中仍使用每局单独填写的
+                临时名称。
+              </p>
+              {nameError && (
+                <p className="field-error" role="alert">{nameError}</p>
+              )}
+              {nameMessage && (
+                <p className="form-message" role="status">{nameMessage}</p>
+              )}
+            </form>
+
+            <form
+              className="account-security-card"
+              onSubmit={(event) => void submitPasswordChange(event)}
+            >
+              <div>
+                <span>ACCOUNT SECURITY</span>
+                <h2>修改账号密码</h2>
+                <p>修改后保留当前设备，其他设备会自动退出登录。</p>
+              </div>
+              <label>
+                <span>当前密码</span>
+                <input
+                  type="password"
+                  minLength={12}
+                  maxLength={128}
+                  required
+                  autoComplete="current-password"
+                  value={currentPassword}
+                  onChange={(event) => setCurrentPassword(event.target.value)}
+                />
+              </label>
+              <label>
+                <span>新密码</span>
+                <input
+                  type="password"
+                  minLength={12}
+                  maxLength={128}
+                  required
+                  autoComplete="new-password"
+                  value={newPassword}
+                  onChange={(event) => setNewPassword(event.target.value)}
+                />
+              </label>
+              <label>
+                <span>再次输入新密码</span>
+                <input
+                  type="password"
+                  minLength={12}
+                  maxLength={128}
+                  required
+                  autoComplete="new-password"
+                  value={passwordConfirmation}
+                  onChange={(event) =>
+                    setPasswordConfirmation(event.target.value)
+                  }
+                />
+              </label>
+              <button
+                className="text-action"
+                type="submit"
+                disabled={
+                  passwordBusy ||
+                  currentPassword.length < 12 ||
+                  newPassword.length < 12 ||
+                  passwordConfirmation.length < 12
+                }
+              >
+                {passwordBusy ? "修改中…" : "确认修改密码 →"}
+              </button>
+              {passwordError && (
+                <p className="field-error" role="alert">{passwordError}</p>
+              )}
+              {passwordMessage && (
+                <p className="form-message" role="status">{passwordMessage}</p>
+              )}
+            </form>
+          </>
+        ) : (
+          <div className="account-identity-card is-local">
+            <span>LOCAL IDENTITY / NO CLOUD PROFILE</span>
+            <strong>教学模式</strong>
+            <p>登录后即可领取稳定玩家编号并设置全局账户名称。</p>
+          </div>
+        )}
         <dl className="record-stats">
           <div>
             <dt>LOCAL RECORD / 完成局数</dt>
@@ -2406,7 +2828,7 @@ function SupportDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
-function CreatorDialog({ onClose }: { onClose: () => void }) {
+export function CreatorDialog({ onClose }: { onClose: () => void }) {
   useEscapeToClose(onClose);
   return (
     <div className="modal-backdrop creator-backdrop" role="presentation">
@@ -2424,7 +2846,7 @@ function CreatorDialog({ onClose }: { onClose: () => void }) {
         >
           ×
         </button>
-        <p className="creator-kicker">FOLLOW THE CREATOR / 02</p>
+        <p className="creator-kicker">FOLLOW THE CREATOR / 03</p>
         <h2 id="creator-title">来找作者玩叭</h2>
         <p>
           开发碎片、更新进度和偶尔掉落的脑洞，都在这里等你喵
@@ -2449,6 +2871,16 @@ function CreatorDialog({ onClose }: { onClose: () => void }) {
           >
             <span>DOUYIN / 抖音</span>
             <strong>去抖音看看作者</strong>
+            <i aria-hidden="true">↗</i>
+          </a>
+          <a
+            className="creator-platform is-github"
+            href={GITHUB_PROJECT_URL}
+            target="_blank"
+            rel="noreferrer"
+          >
+            <span>GITHUB / OPEN SOURCE</span>
+            <strong>去 GitHub 看看项目</strong>
             <i aria-hidden="true">↗</i>
           </a>
         </div>
@@ -2578,7 +3010,7 @@ function FeedbackDialog({
             </fieldset>
             {!canSubmit && (
               <p className="feedback-login-note" role="note">
-                当前是本地演示身份。登录账户后，反馈才可以安全送到作者邮箱喵。
+                当前是教学模式身份。登录账户后，反馈才可以安全送到作者邮箱喵。
               </p>
             )}
             {error && (
@@ -2629,16 +3061,18 @@ const RESULT_STYLE_OPTIONS = [
 
 type ResultStyle = (typeof RESULT_STYLE_OPTIONS)[number]["id"];
 
-function ResultScreen({
+export function ResultScreen({
   result,
   nickname,
   messageCount,
+  tutorialMode,
   onAgain,
   onHome,
 }: {
   result: GameResult;
   nickname: string;
   messageCount: number;
+  tutorialMode: boolean;
   onAgain: () => void;
   onHome: () => void;
 }) {
@@ -2822,6 +3256,11 @@ function ResultScreen({
         <span>IDENTITY REVEALED</span>
         <span>{result.isCorrect ? "判断成立" : "判断偏差"}</span>
       </div>
+      {tutorialMode && (
+        <TutorialCallout step="07" title="教学完成" compact>
+          身份与得分都会在这里揭晓。你可以再来一局练习，或返回首页开始真人匹配。
+        </TutorialCallout>
+      )}
       <aside className="result-style-switcher" aria-label="结算卡风格">
         <span>RESULT STYLE</span>
         {RESULT_STYLE_OPTIONS.map((option) => (
@@ -2908,7 +3347,7 @@ function ResultScreen({
           复制结果
         </button>
         <button className="text-action" type="button" onClick={onHome}>
-          返回首页
+          ← 返回首页
         </button>
         <span className="share-status" role="status" aria-live="polite">
           {shareStatus === "copied" && "结果已复制"}

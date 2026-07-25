@@ -296,6 +296,8 @@ describe("AuthService 账户生命周期", () => {
     );
     const exported = await fixture.auth.exportAccountSummary(user.id);
     assert.equal(exported.account.email, "Alice@Example.com");
+    assert.ok(exported.account.playerNumber >= 100_001);
+    assert.equal(exported.account.displayName, "图灵玩家");
     assert.equal(exported.sessions.length, 1);
     assert.equal(exported.devices.length, 1);
     assert.equal("passwordHash" in exported.account, false);
@@ -306,6 +308,7 @@ describe("AuthService 账户生命周期", () => {
     const deleted = await fixture.repository.findUserById(user.id);
     assert.equal(deleted?.status, "DELETED");
     assert.match(deleted?.emailCanonical ?? "", /@deleted\.invalid$/u);
+    assert.equal(deleted?.displayName, "已删除用户");
     assert.equal(deleted?.nickname, "已删除用户");
     assert.equal(deleted?.typingStatus, "");
     assert.equal(

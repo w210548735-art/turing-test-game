@@ -13,10 +13,13 @@ export type CreateUserInput = Omit<
   | "createdAt"
   | "updatedAt"
   | "emailOriginal"
+  | "playerNumber"
+  | "displayName"
   | "nickname"
   | "typingStatus"
 > & {
   emailOriginal?: string;
+  displayName?: string;
   nickname?: string;
   typingStatus?: string;
 };
@@ -106,6 +109,7 @@ export interface AuthRepository {
 }
 
 export class InMemoryAuthRepository implements AuthRepository {
+  private nextPlayerNumber = 100_001;
   private readonly users = new Map<string, AuthUser>();
   private readonly userIdByEmail = new Map<string, string>();
   private readonly verificationTokens = new Map<
@@ -128,6 +132,8 @@ export class InMemoryAuthRepository implements AuthRepository {
     const user: AuthUser = {
       ...input,
       emailOriginal: input.emailOriginal ?? input.emailCanonical,
+      playerNumber: this.nextPlayerNumber++,
+      displayName: input.displayName ?? "图灵玩家",
       nickname: input.nickname ?? "新玩家",
       typingStatus: input.typingStatus ?? "",
       id: randomUUID(),

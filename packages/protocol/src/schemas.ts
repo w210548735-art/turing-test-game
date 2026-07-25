@@ -25,6 +25,8 @@ const accountUserSchema = z
   .object({
     id: z.string().uuid(),
     email: emailSchema,
+    playerNumber: z.number().int().min(100_001),
+    displayName: z.string().trim().min(2).max(18),
     status: accountStatusSchema,
   })
   .strict();
@@ -71,6 +73,18 @@ export const accountSessionResponseSchema = z
 export const bootstrapAccountRequestSchema = z.object({}).strict();
 export const bootstrapAccountResponseSchema = accountSessionResponseSchema;
 
+export const accountProfileInputSchema = z
+  .object({
+    displayName: z.string().trim().min(2).max(18),
+  })
+  .strict();
+
+export const accountProfileResponseSchema = z
+  .object({
+    user: accountUserSchema,
+  })
+  .strict();
+
 export const forgotPasswordRequestSchema = z
   .object({
     email: emailSchema,
@@ -89,6 +103,19 @@ export const resetPasswordRequestSchema = z
 export const resetPasswordResponseSchema = z
   .object({
     reset: z.literal(true),
+  })
+  .strict();
+
+export const changePasswordRequestSchema = z
+  .object({
+    currentPassword: passwordSchema,
+    newPassword: passwordSchema,
+  })
+  .strict();
+
+export const changePasswordResponseSchema = z
+  .object({
+    changed: z.literal(true),
   })
   .strict();
 
@@ -454,6 +481,10 @@ export type LoginAccountRequest = z.infer<typeof loginAccountRequestSchema>;
 export type AccountSessionResponse = z.infer<
   typeof accountSessionResponseSchema
 >;
+export type AccountProfileInput = z.infer<typeof accountProfileInputSchema>;
+export type AccountProfileResponse = z.infer<
+  typeof accountProfileResponseSchema
+>;
 export type BootstrapAccountRequest = z.infer<
   typeof bootstrapAccountRequestSchema
 >;
@@ -471,6 +502,12 @@ export type ResetPasswordRequest = z.infer<
 >;
 export type ResetPasswordResponse = z.infer<
   typeof resetPasswordResponseSchema
+>;
+export type ChangePasswordRequest = z.infer<
+  typeof changePasswordRequestSchema
+>;
+export type ChangePasswordResponse = z.infer<
+  typeof changePasswordResponseSchema
 >;
 export type LogoutRequest = z.infer<typeof logoutRequestSchema>;
 export type LogoutResponse = z.infer<typeof logoutResponseSchema>;

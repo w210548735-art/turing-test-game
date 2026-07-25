@@ -1,6 +1,8 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
+  accountProfileInputSchema,
   bootstrapAccountRequestSchema,
+  changePasswordRequestSchema,
   clientEventSchema,
   forgotPasswordRequestSchema,
   loginAccountRequestSchema,
@@ -751,11 +753,7 @@ export async function buildServer(
     ]);
     return {
       authenticated: true as const,
-      user: {
-        id: user.id,
-        email: user.emailOriginal,
-        status: user.status,
-      },
+      user: publicAccountUser(user),
       csrfToken: issued.csrfToken,
       sessionExpiresAt: issued.session.absoluteExpiresAt.getTime(),
       ...(wsTicket
@@ -764,6 +762,16 @@ export async function buildServer(
             wsTicketExpiresAt: wsTicket.expiresAt,
           }
         : {}),
+    };
+  }
+
+  function publicAccountUser(user: AuthUser) {
+    return {
+      id: user.id,
+      email: user.emailOriginal,
+      playerNumber: user.playerNumber,
+      displayName: user.displayName,
+      status: user.status,
     };
   }
 
@@ -821,6 +829,7 @@ export async function buildServer(
     const path = request.url.split("?", 1)[0] ?? "";
     const requiresBrowserOrigin =
       path.startsWith("/api/auth/") ||
+      path === "/api/account/profile" ||
       path === "/api/session" ||
       path === "/api/profile" ||
       path === "/api/ws-ticket" ||
@@ -1503,6 +1512,46 @@ export async function buildServer(
     },
   );
 
+  app.put<{ Body: unknown }>(
+    "/api/auth/password/change",
+    async (request) => {
+      const session = await sessionFromRequest(request);
+      if (!session?.accountAuthenticated) {
+        throw new AppError(
+          "ACCOUNT_REQUIRED",
+          "请先登录账户，再修改密码。",
+          401,
+        );
+      }
+      requireCsrf(request, session);
+      await consumeGameRateLimit("account.password.change", session);
+      const parsed = changePasswordRequestSchema.safeParse(request.body);
+      if (!parsed.success) {
+        throw new AppError(
+          "INVALID_PASSWORD_CHANGE",
+          "当前密码或新密码格式无效。",
+        );
+      }
+      await authService.changePassword(
+        session.userId,
+        parsed.data.currentPassword,
+        parsed.data.newPassword,
+        session.sessionId,
+      );
+      for (const [tokenHash, runtimeSession] of sessions) {
+        if (
+          runtimeSession.userId !== session.userId ||
+          runtimeSession.sessionId === session.sessionId
+        ) {
+          continue;
+        }
+        runtimeSession.socket?.close(4003, "Session revoked");
+        sessions.delete(tokenHash);
+      }
+      return { changed: true as const };
+    },
+  );
+
   app.post<{ Body: unknown }>(
     "/api/auth/logout",
     async (request, reply) => {
@@ -1699,6 +1748,31 @@ export async function buildServer(
       session.databaseUserId = databaseUser.id;
     }
     return { profile: session.profile };
+  });
+
+  app.put<{ Body: unknown }>("/api/account/profile", async (request) => {
+    const session = await sessionFromRequest(request);
+    if (!session?.accountAuthenticated) {
+      throw new AppError(
+        "ACCOUNT_REQUIRED",
+        "请先登录账户，再修改全局名称。",
+        401,
+      );
+    }
+    requireCsrf(request, session);
+    httpLimiter.take(`account-profile:${session.userId}`, 10, 60_000);
+    const parsed = accountProfileInputSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new AppError(
+        "INVALID_ACCOUNT_PROFILE",
+        "账户名称需要 2–18 个字符。",
+      );
+    }
+    const account = await authService.getUser(session.userId);
+    account.displayName = validateNickname(parsed.data.displayName);
+    account.updatedAt = new Date();
+    const updated = await authRepository.updateUser(account);
+    return { user: publicAccountUser(updated) };
   });
 
   app.post("/api/ws-ticket", async (request) => {

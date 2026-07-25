@@ -17,7 +17,6 @@ import {
   type EchoComment,
 } from "./api";
 import { EchoCommentsPanel } from "./EchoCommentsPanel";
-import { EchoRecordPage } from "./EchoRecordPage";
 import {
   commentsForEvent,
   shouldLoadEchoComments,
@@ -36,13 +35,12 @@ type ReplaySessionView = EchoCommentGateView;
 export function EchoArchivePage({
   csrfToken,
   onBack,
+  onOpenRecords,
 }: {
   csrfToken: string;
   onBack: () => void;
+  onOpenRecords: () => void;
 }) {
-  const [pageView, setPageView] = useState<"archive" | "records">(
-    "archive",
-  );
   const [loadState, setLoadState] = useState<LoadState>("idle");
   const [assignment, setAssignment] =
     useState<EchoAssignmentResponse | null>(null);
@@ -68,10 +66,6 @@ export function EchoArchivePage({
     }
   }
 
-  if (pageView === "records") {
-    return <EchoRecordPage onBack={() => setPageView("archive")} />;
-  }
-
   return (
     <section className="echo-page">
       <header className="echo-page-header">
@@ -85,7 +79,7 @@ export function EchoArchivePage({
           <button
             className="echo-record-action"
             type="button"
-            onClick={() => setPageView("records")}
+            onClick={onOpenRecords}
           >
             查看我的鉴证战绩 <span aria-hidden="true">↗</span>
           </button>
@@ -308,6 +302,23 @@ function EchoReplaySession({
     }`;
   }
 
+  if (
+    sessionView === "result" &&
+    result &&
+    guessA !== null &&
+    guessB !== null
+  ) {
+    return (
+      <JudgmentResult
+        result={result}
+        guesses={{ A: guessA, B: guessB }}
+        confidences={{ A: confidenceA, B: confidenceB }}
+        onReview={enterReview}
+        onNext={onNext}
+      />
+    );
+  }
+
   return (
     <div
       className={`echo-workbench ${
@@ -334,7 +345,7 @@ function EchoReplaySession({
             </dd>
           </div>
           <div>
-            <dt>匿名对象</dt>
+            <dt>匿名玩家</dt>
             <dd>A / B</dd>
           </div>
         </dl>
@@ -503,12 +514,6 @@ function EchoReplaySession({
               <p>点击聊天中的任意一句话，就可以查看或留下批注。</p>
             )}
           </div>
-        ) : result ? (
-          <JudgmentResult
-            result={result}
-            onReview={enterReview}
-            onNext={onNext}
-          />
         ) : (
           <JudgmentForm
             completed={playback.completed}
@@ -611,7 +616,7 @@ function PlaybackControls({
   );
 }
 
-interface JudgmentFormProps {
+export interface JudgmentFormProps {
   completed: boolean;
   guessA: Identity | null;
   guessB: Identity | null;
@@ -626,7 +631,7 @@ interface JudgmentFormProps {
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }
 
-function JudgmentForm(props: JudgmentFormProps) {
+export function JudgmentForm(props: JudgmentFormProps) {
   return (
     <form className="echo-judgment-form" onSubmit={props.onSubmit}>
       <p className="eyebrow">FINAL VERDICT / TWO IDENTITIES</p>
@@ -723,58 +728,145 @@ function IdentityVerdict({
   );
 }
 
-function JudgmentResult({
+export function JudgmentResult({
   result,
+  guesses,
+  confidences,
   onReview,
   onNext,
 }: {
   result: SubmitEchoJudgmentResponse;
+  guesses: Record<EchoActor, Identity>;
+  confidences: Record<EchoActor, number>;
   onReview: () => void;
   onNext: () => void;
 }) {
+  const outcome =
+    result.correctCount === 2
+      ? {
+          title: "双重命中",
+          summary: "两位匿名玩家的身份都被你准确识别。",
+        }
+      : result.correctCount === 1
+        ? {
+            title: "命中一半",
+            summary: "你听懂了一道回声，另一道仍藏在噪声里。",
+          }
+        : {
+            title: "回声骗过了你",
+            summary: "这一次，两位匿名玩家都成功偏离了你的判断。",
+          };
+  const identityText = (identity: Identity) =>
+    identity === "human" ? "真人" : "AI";
+
   return (
-    <div className="echo-judgment-result" role="status">
-      <p className="eyebrow">IDENTITIES REVEALED</p>
-      <h2>
-        {result.correctCount === 2
-          ? "双重命中"
-          : result.correctCount === 1
-            ? "命中一半"
-            : "回声骗过了你"}
-      </h2>
-      <div className="echo-result-identities">
-        {(["A", "B"] as const).map((actor) => (
-          <div
-            key={actor}
-            className={result.correct[actor] ? "is-correct" : "is-wrong"}
-          >
-            <span>匿名玩家 {actor}</span>
-            <strong>
-              {result.identities[actor] === "human" ? "真人" : "AI"}
-            </strong>
-            <i aria-hidden="true">
-              {result.correct[actor] ? "✓" : "×"}
-            </i>
+    <section className="echo-settlement" role="status" aria-labelledby="echo-settlement-title">
+      <header className="echo-settlement-header">
+        <div>
+          <p className="eyebrow">CASE CLOSED / IDENTITIES REVEALED</p>
+          <span>回声鉴证结案 · 双身份判读</span>
+        </div>
+        <div className="echo-score-stamp" aria-label={`本局获得 ${result.scoreDelta} 分`}>
+          <span>本局得分</span>
+          <strong>+{result.scoreDelta}</strong>
+        </div>
+      </header>
+
+      <div className="echo-settlement-main">
+        <div className="echo-settlement-outcome">
+          <span className="echo-outcome-count" aria-hidden="true">
+            {result.correctCount}/2
+          </span>
+          <p>IDENTITY HITS</p>
+          <h2 id="echo-settlement-title">{outcome.title}</h2>
+          <p>{outcome.summary}</p>
+          <div className="echo-score-rule">
+            <strong>SCORING / 10 · 4 · 0</strong>
+            <span>双身份全对 +10</span>
+            <span>命中一个 +4</span>
+            <span>全部判断偏差 +0</span>
           </div>
-        ))}
+        </div>
+
+        <div className="echo-verdict-comparison">
+          <header>
+            <div>
+              <p className="eyebrow">EVIDENCE COMPARISON</p>
+              <h3>你的判断，与真实身份</h3>
+            </div>
+            <span>答案已揭晓</span>
+          </header>
+          <div className="echo-verdict-cards">
+            {(["A", "B"] as const).map((actor) => (
+              <article
+                key={actor}
+                className={result.correct[actor] ? "is-correct" : "is-wrong"}
+              >
+                <header>
+                  <span>匿名玩家 {actor}</span>
+                  <strong>
+                    {result.correct[actor] ? "判断命中 ✓" : "判断偏差 ×"}
+                  </strong>
+                </header>
+                <dl>
+                  <div>
+                    <dt>你的判断</dt>
+                    <dd>{identityText(guesses[actor])}</dd>
+                  </div>
+                  <div>
+                    <dt>真实身份</dt>
+                    <dd>{identityText(result.identities[actor])}</dd>
+                  </div>
+                  <div>
+                    <dt>把握程度</dt>
+                    <dd>{confidences[actor]}%</dd>
+                  </div>
+                </dl>
+              </article>
+            ))}
+          </div>
+        </div>
       </div>
-      <dl className="echo-result-stats">
-        <div><dt>本次得分</dt><dd>+{result.scoreDelta}</dd></div>
-        <div><dt>置信校准</dt><dd>{result.confidenceCalibration}%</dd></div>
-        <div><dt>完美判读</dt><dd>{result.stats.perfectJudgments}</dd></div>
-        <div><dt>鉴证总分</dt><dd>{result.stats.score}</dd></div>
+
+      <dl className="echo-settlement-stats">
+        <div>
+          <dt>SCORE / 本次得分</dt>
+          <dd>本局 +{result.scoreDelta}</dd>
+        </div>
+        <div>
+          <dt>CALIBRATION / 置信校准</dt>
+          <dd>{result.confidenceCalibration}%</dd>
+        </div>
+        <div>
+          <dt>REVIEWS / 累计判读</dt>
+          <dd>{result.stats.reviewsPlayed}</dd>
+        </div>
+        <div>
+          <dt>PERFECT / 完美判读</dt>
+          <dd>{result.stats.perfectJudgments}</dd>
+        </div>
+        <div>
+          <dt>TOTAL / 鉴证总分</dt>
+          <dd>{result.stats.score}</dd>
+        </div>
       </dl>
-      <p>
-        {result.bothCorrect
-          ? "两道回声都被你听懂啦 ( •̀ ω •́ )✧"
-          : "别担心，最像人的停顿有时恰好来自机器。"}
-      </p>
-      <button className="primary-action" type="button" onClick={onReview}>
-        带着答案重看 <span aria-hidden="true">↗</span>
-      </button>
-      <button className="echo-secondary-action" type="button" onClick={onNext}>
-        领取下一份档案 <span aria-hidden="true">↗</span>
-      </button>
-    </div>
+
+      <footer className="echo-settlement-actions">
+        <div>
+          <strong>
+            {result.bothCorrect
+              ? "两道回声都被你听懂啦 ( •̀ ω •́ )✧"
+              : "别急着责怪直觉，带着答案回去看看破绽吧。"}
+          </strong>
+          <span>重看后才会加载其他鉴证官留下的回声批注。</span>
+        </div>
+        <button className="primary-action" type="button" onClick={onReview}>
+          带着答案重看 <span aria-hidden="true">↗</span>
+        </button>
+        <button className="echo-secondary-action" type="button" onClick={onNext}>
+          领取下一份档案 <span aria-hidden="true">↗</span>
+        </button>
+      </footer>
+    </section>
   );
 }

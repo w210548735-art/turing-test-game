@@ -230,6 +230,11 @@ describe("匹配与结算规则", () => {
       a.socket.sent.some((event) => event.type === "match.found"),
       true,
     );
+    assert.equal(
+      a.socket.sent.find((event) => event.type === "match.found")
+        ?.opponentLabel,
+      "晚风",
+    );
 
     const { service: humanService, clock: humanClock } = harness();
     const b = session("b");
@@ -259,6 +264,16 @@ describe("匹配与结算规则", () => {
     assert.equal(
       c.socket.sent.some((event) => event.type === "match.found"),
       true,
+    );
+    assert.equal(
+      b.socket.sent.find((event) => event.type === "match.found")
+        ?.opponentLabel,
+      "玩家c",
+    );
+    assert.equal(
+      c.socket.sent.find((event) => event.type === "match.found")
+        ?.opponentLabel,
+      "玩家b",
     );
   });
 
@@ -355,6 +370,29 @@ describe("匹配与结算规则", () => {
     );
     assert.equal(settled?.opponentType, "ai");
     assert.equal(settled?.isCorrect, true);
+  });
+
+  it("AI 回复使用玩家在房间中看到的同一个本局临时名称", async () => {
+    let promptTemporaryName = "";
+    const { service, clock } = harness({
+      aiReply: async ({ temporaryName }) => {
+        promptTemporaryName = temporaryName;
+        return "我在想怎么回答。";
+      },
+    });
+    const player = session("ai-name");
+    service.joinQueue(player.session);
+    finishMatch(clock);
+    const visibleName = player.socket.sent.find(
+      (event) => event.type === "match.found",
+    )?.opponentLabel;
+
+    service.sendChat(player.session, "你叫什么？");
+    clock.advance(500);
+    await flushAsync();
+
+    assert.equal(visibleName, "晚风");
+    assert.equal(promptTemporaryName, visibleName);
   });
 
   it("真人局等待双方判断，且不广播 opponent.guessed", () => {

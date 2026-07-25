@@ -65,6 +65,7 @@ export interface Room {
   aiDelayTimer?: NodeJS.Timeout;
   expiryTimer?: NodeJS.Timeout;
   aiReplyCount: number;
+  aiTemporaryName?: string;
   aiDatabaseParticipantId?: string;
   persistenceChain?: Promise<void>;
   persistenceFailed?: boolean;

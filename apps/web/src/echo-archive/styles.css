@@ -764,6 +764,298 @@
   transform: translate(-1px, -1px);
 }
 
+.echo-settlement {
+  min-height: 700px;
+  border-bottom: 1px solid var(--ink);
+  background: var(--paper-bright);
+  animation: echo-message-in 0.42s var(--ease-out) both;
+}
+
+.echo-settlement-header {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  min-height: 104px;
+  border-bottom: 1px solid var(--ink);
+}
+
+.echo-settlement-header > div:first-child {
+  display: grid;
+  align-content: center;
+  gap: 8px;
+  padding: 22px var(--gutter);
+}
+
+.echo-settlement-header p {
+  margin: 0;
+}
+
+.echo-settlement-header > div:first-child > span {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.echo-score-stamp {
+  display: grid;
+  place-items: center;
+  min-width: 176px;
+  border-left: 1px solid var(--ink);
+  padding: 14px 24px;
+  background: var(--accent);
+}
+
+.echo-score-stamp span {
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+}
+
+.echo-score-stamp strong {
+  font-size: 2.8rem;
+  line-height: 0.9;
+  letter-spacing: -0.08em;
+}
+
+.echo-settlement-main {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.76fr) minmax(520px, 1.24fr);
+  border-bottom: 1px solid var(--ink);
+}
+
+.echo-settlement-outcome {
+  position: relative;
+  min-height: 450px;
+  overflow: hidden;
+  padding: clamp(38px, 5vw, 76px) var(--gutter);
+  background: var(--ink);
+  color: var(--paper-bright);
+}
+
+.echo-outcome-count {
+  position: absolute;
+  right: -0.05em;
+  bottom: -0.2em;
+  color: rgb(255 255 255 / 8%);
+  font-size: clamp(10rem, 22vw, 21rem);
+  font-weight: 900;
+  line-height: 0.8;
+  letter-spacing: -0.14em;
+  pointer-events: none;
+}
+
+.echo-settlement-outcome > p:first-of-type {
+  position: relative;
+  margin: 0 0 20px;
+  color: var(--accent);
+  font-size: 0.6rem;
+  font-weight: 800;
+  letter-spacing: 0.13em;
+}
+
+.echo-settlement-outcome h2 {
+  position: relative;
+  max-width: 620px;
+  margin: 0;
+  font-size: clamp(4rem, 8vw, 8.5rem);
+  line-height: 0.82;
+  letter-spacing: -0.1em;
+}
+
+.echo-settlement-outcome > p:last-of-type {
+  position: relative;
+  max-width: 460px;
+  margin: 28px 0 0;
+  color: rgb(250 250 245 / 72%);
+  font-size: 0.82rem;
+  line-height: 1.75;
+}
+
+.echo-score-rule {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 5px;
+  max-width: 320px;
+  margin-top: 48px;
+  border-top: 1px solid rgb(250 250 245 / 42%);
+  padding-top: 16px;
+  color: rgb(250 250 245 / 64%);
+  font-size: 0.58rem;
+}
+
+.echo-score-rule strong {
+  margin-bottom: 4px;
+  color: var(--accent);
+  letter-spacing: 0.1em;
+}
+
+.echo-verdict-comparison {
+  padding: clamp(30px, 4vw, 62px) var(--gutter);
+}
+
+.echo-verdict-comparison > header {
+  display: flex;
+  gap: 20px;
+  align-items: end;
+  justify-content: space-between;
+  margin-bottom: 30px;
+}
+
+.echo-verdict-comparison h3 {
+  margin: 7px 0 0;
+  font-size: clamp(2rem, 3.5vw, 4rem);
+  line-height: 0.95;
+  letter-spacing: -0.07em;
+}
+
+.echo-verdict-comparison > header > span {
+  border: 1px solid var(--ink);
+  padding: 6px 8px;
+  font-size: 0.58rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.echo-verdict-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.echo-verdict-cards article {
+  border: 1px solid var(--ink);
+  background: var(--paper);
+  box-shadow: 6px 6px 0 rgb(16 17 15 / 8%);
+}
+
+.echo-verdict-cards article.is-correct {
+  box-shadow: 6px 6px 0 var(--accent);
+}
+
+.echo-verdict-cards article.is-wrong {
+  box-shadow: 6px 6px 0 #ff7a70;
+}
+
+.echo-verdict-cards article > header {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 58px;
+  border-bottom: 1px solid var(--ink);
+  padding: 12px 15px;
+}
+
+.echo-verdict-cards article > header span {
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.echo-verdict-cards article > header strong {
+  padding: 5px 7px;
+  background: var(--accent);
+  font-size: 0.55rem;
+}
+
+.echo-verdict-cards article.is-wrong > header strong {
+  background: #ffd4d0;
+}
+
+.echo-verdict-cards dl {
+  margin: 0;
+  padding: 8px 15px 15px;
+}
+
+.echo-verdict-cards dl > div {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+  min-height: 56px;
+  border-bottom: 1px solid var(--line);
+  padding: 12px 0;
+}
+
+.echo-verdict-cards dl > div:last-child {
+  border-bottom: 0;
+}
+
+.echo-verdict-cards dt {
+  color: var(--muted);
+  font-size: 0.6rem;
+}
+
+.echo-verdict-cards dd {
+  margin: 0;
+  font-size: 1.35rem;
+  font-weight: 800;
+}
+
+.echo-settlement-stats {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  margin: 0;
+  border-bottom: 1px solid var(--ink);
+}
+
+.echo-settlement-stats > div {
+  min-width: 0;
+  min-height: 104px;
+  border-right: 1px solid var(--ink);
+  padding: 20px var(--gutter);
+}
+
+.echo-settlement-stats > div:last-child {
+  border-right: 0;
+}
+
+.echo-settlement-stats dt {
+  color: var(--muted);
+  font-size: 0.55rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.echo-settlement-stats dd {
+  margin: 12px 0 0;
+  overflow: hidden;
+  font-size: clamp(1.45rem, 2.8vw, 3rem);
+  font-weight: 800;
+  letter-spacing: -0.06em;
+  text-overflow: ellipsis;
+}
+
+.echo-settlement-actions {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto auto;
+  gap: 14px;
+  align-items: center;
+  padding: 26px var(--gutter) 32px;
+}
+
+.echo-settlement-actions > div {
+  display: grid;
+  gap: 6px;
+}
+
+.echo-settlement-actions > div strong {
+  font-size: 0.78rem;
+}
+
+.echo-settlement-actions > div span {
+  color: var(--muted);
+  font-size: 0.6rem;
+}
+
+.echo-settlement-actions > button {
+  min-height: 50px;
+  margin: 0;
+}
+
+.echo-settlement-actions .echo-secondary-action {
+  width: auto;
+}
+
 .echo-workbench.is-reviewing .echo-judgment-panel {
   padding: 0;
 }
@@ -1172,6 +1464,18 @@
     grid-template-columns: 44px 82px minmax(300px, 1fr) 92px;
     gap: 14px;
   }
+
+  .echo-settlement-main {
+    grid-template-columns: minmax(280px, 0.7fr) minmax(460px, 1.3fr);
+  }
+
+  .echo-settlement-actions {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .echo-settlement-actions > div {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (max-width: 760px) {
@@ -1303,6 +1607,66 @@
   .echo-record-list .record-game-meta > strong {
     align-self: center;
   }
+
+  .echo-settlement-header {
+    min-height: 90px;
+  }
+
+  .echo-settlement-header > div:first-child {
+    padding: 18px var(--gutter);
+  }
+
+  .echo-score-stamp {
+    min-width: 112px;
+    padding: 12px;
+  }
+
+  .echo-score-stamp strong {
+    font-size: 2.2rem;
+  }
+
+  .echo-settlement-main {
+    grid-template-columns: 1fr;
+  }
+
+  .echo-settlement-outcome {
+    min-height: 420px;
+  }
+
+  .echo-verdict-cards {
+    grid-template-columns: 1fr;
+  }
+
+  .echo-settlement-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .echo-settlement-stats > div {
+    border-bottom: 1px solid var(--ink);
+  }
+
+  .echo-settlement-stats > div:nth-child(2n) {
+    border-right: 0;
+  }
+
+  .echo-settlement-stats > div:last-child {
+    grid-column: 1 / -1;
+    border-bottom: 0;
+  }
+
+  .echo-settlement-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .echo-settlement-actions > div {
+    grid-column: auto;
+  }
+
+  .echo-settlement-actions > button,
+  .echo-settlement-actions .echo-secondary-action {
+    width: 100%;
+    min-height: 50px;
+  }
 }
 
 @media (max-width: 480px) {
@@ -1372,6 +1736,41 @@
 
   .echo-record-list .record-game-meta {
     grid-column: 2;
+  }
+
+  .echo-settlement-header > div:first-child > span {
+    display: none;
+  }
+
+  .echo-score-stamp {
+    min-width: 96px;
+  }
+
+  .echo-settlement-outcome {
+    min-height: 390px;
+    padding: 42px 20px;
+  }
+
+  .echo-settlement-outcome h2 {
+    font-size: clamp(3.6rem, 18vw, 5.2rem);
+  }
+
+  .echo-verdict-comparison {
+    padding: 34px 20px 42px;
+  }
+
+  .echo-verdict-comparison > header {
+    align-items: start;
+    flex-direction: column;
+  }
+
+  .echo-settlement-stats > div {
+    min-height: 92px;
+    padding: 16px 20px;
+  }
+
+  .echo-settlement-actions {
+    padding: 24px 20px calc(30px + env(safe-area-inset-bottom));
   }
 }
 

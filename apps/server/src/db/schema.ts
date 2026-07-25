@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   boolean,
   check,
   index,
@@ -127,6 +128,8 @@ export const users = pgTable(
       withTimezone: true,
       mode: "date",
     }),
+    playerNumber: bigint("player_number", { mode: "number" }),
+    displayName: text("display_name"),
     nickname: text("nickname").notNull(),
     typingStatus: text("typing_status").notNull(),
     status: userStatusEnum("status").notNull().default("active"),
@@ -156,6 +159,7 @@ export const users = pgTable(
   (table) => [
     uniqueIndex("users_session_token_hash_uidx").on(table.sessionTokenHash),
     uniqueIndex("users_email_canonical_uidx").on(table.emailCanonical),
+    uniqueIndex("users_player_number_uidx").on(table.playerNumber),
     index("users_status_last_seen_idx").on(table.status, table.lastSeenAt),
     check(
       "users_email_canonical_normalized",
