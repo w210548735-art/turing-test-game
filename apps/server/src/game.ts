@@ -9,6 +9,7 @@ import type {
 } from "./ai/usage-budget.js";
 import type { GameRepository } from "./db/repositories/game-repository.js";
 import type { ReportRepository as DatabaseReportRepository } from "./db/repositories/report-repository.js";
+import type { EchoArchiveService } from "./echo/index.js";
 import { AppError } from "./errors.js";
 import type { AiBudgetController } from "./matchmaking/ai-budget.js";
 import {
@@ -38,7 +39,6 @@ export const DEFAULT_MAX_QUEUE_SIZE = 500;
 export const GUESS_UNLOCK_MS = 20_000;
 export const ROOM_DURATION_MS = 5 * 60_000;
 export const DISCONNECT_GRACE_MS = 30_000;
-export const TYPING_THROTTLE_MS = 1_500;
 export const TYPING_EXPIRY_MS = 3_000;
 export const MAX_MESSAGES_PER_PLAYER = 20;
 export const AI_RATIO_TARGET = 0.25;
@@ -77,6 +77,12 @@ export interface GameServiceOptions {
   roomStore?: RoomSnapshotStore;
   gameRepository?: GameRepository;
   reportRepository?: DatabaseReportRepository;
+  echoArchiveService?: Pick<
+    EchoArchiveService,
+    | "appendTimelineEvent"
+    | "initializeArchiveCandidate"
+    | "withdrawForReport"
+  >;
   moderation?: ModerationPipeline;
   onModerationDecision?: (
     decision: ModerationDecision,
@@ -118,6 +124,7 @@ export class GameService {
   private readonly roomStore?: RoomSnapshotStore;
   private readonly gameRepository?: GameRepository;
   private readonly reportRepository?: DatabaseReportRepository;
+  private readonly echoArchiveService?: GameServiceOptions["echoArchiveService"];
   private readonly moderation: ModerationPipeline;
   private readonly onModerationDecision?: GameServiceOptions["onModerationDecision"];
   private readonly onPersistenceError?: GameServiceOptions["onPersistenceError"];
@@ -137,6 +144,7 @@ export class GameService {
     this.roomStore = options.roomStore;
     this.gameRepository = options.gameRepository;
     this.reportRepository = options.reportRepository;
+    this.echoArchiveService = options.echoArchiveService;
     this.moderation = options.moderation ?? new ModerationPipeline();
     this.onModerationDecision = options.onModerationDecision;
     this.onPersistenceError = options.onPersistenceError;
@@ -251,6 +259,7 @@ export class GameService {
     }
     const participant = this.participantFor(room, session.userId);
     participant.connected = false;
+    room.hadDisconnect = true;
     this.broadcastToOthers(room, session.userId, {
       type: "game.disconnected",
       message: "对方连接中断，正在等待恢复。",
@@ -293,6 +302,8 @@ export class GameService {
         "本局每位玩家最多发送 20 条消息。",
       );
     }
+    const messageId = randomUUID();
+    const receivedAt = this.now();
     const moderation = this.moderation.evaluate({
       text: rawText,
       surface: "CHAT",
@@ -317,12 +328,13 @@ export class GameService {
     }
     const text = moderation.text;
     const replaced = moderation.action === "REDACT";
+    const visibleAt = this.now();
     const message: ChatMessage = {
-      id: randomUUID(),
+      id: messageId,
       senderId: session.userId,
       sender: "self",
       text,
-      at: this.now(),
+      at: visibleAt,
       sequence: room.messages.length + 1,
       clientMessageId,
       moderated: replaced,
@@ -330,6 +342,20 @@ export class GameService {
     participant.messageCount += 1;
     room.messages.push(message);
     this.persistMessage(room, message);
+    this.persistTimelineEvent(room, {
+      eventType: "message_received",
+      actorParticipantId: participant.databaseParticipantId,
+      messageId,
+      occurredAt: receivedAt,
+      moderated: replaced,
+    });
+    this.persistTimelineEvent(room, {
+      eventType: "message_visible",
+      actorParticipantId: participant.databaseParticipantId,
+      messageId,
+      occurredAt: visibleAt,
+      moderated: replaced,
+    });
     this.broadcastMessage(room, message, replaced);
     if (room.opponentType === "ai") {
       this.scheduleAiReply(room);
@@ -344,25 +370,30 @@ export class GameService {
     const room = this.requireAuthorizedRoom(session);
     const participant = this.participantFor(room, session.userId);
     const now = this.now();
-    if (active && now - participant.lastTypingAt < TYPING_THROTTLE_MS) {
-      return;
-    }
-    participant.lastTypingAt = now;
     if (participant.typingExpiry) {
       this.clearTimer(participant.typingExpiry);
       participant.typingExpiry = undefined;
     }
-    this.broadcastToOthers(room, session.userId, {
-      type: active ? "chat.typing_start" : "chat.typing_stop",
-      status: active ? session.profile.typingStatus : undefined,
-    });
     if (active) {
-      participant.typingExpiry = this.setTimer(() => {
-        this.broadcastToOthers(room, session.userId, {
-          type: "chat.typing_stop",
+      const firstTransition = !participant.typingActive;
+      if (firstTransition) {
+        participant.typingActive = true;
+        this.persistTimelineEvent(room, {
+          eventType: "typing_start",
+          actorParticipantId: participant.databaseParticipantId,
+          occurredAt: now,
         });
+        this.broadcastToOthers(room, session.userId, {
+          type: "chat.typing_start",
+          status: session.profile.typingStatus,
+        });
+      }
+      participant.typingExpiry = this.setTimer(() => {
+        this.stopParticipantTyping(room, participant);
       }, TYPING_EXPIRY_MS);
+      return;
     }
+    this.stopParticipantTyping(room, participant);
   }
 
   submitGuess(
@@ -462,6 +493,7 @@ export class GameService {
         },
       });
     }
+    await this.echoArchiveService?.withdrawForReport(room.id, this.now());
     this.reports.set(report.id, report);
     return report;
   }
@@ -845,11 +877,13 @@ export class GameService {
         guess: null,
         messageCount: 0,
         connected: true,
-        lastTypingAt: 0,
+        typingActive: false,
       })),
       createdAt,
       expiresAt: createdAt + ROOM_DURATION_MS,
       messages: [],
+      timelineSequence: 0,
+      hadDisconnect: false,
       aiReplyCount: 0,
     };
     this.rooms.set(room.id, room);
@@ -879,6 +913,10 @@ export class GameService {
   }
 
   private activateRoom(room: Room): void {
+    this.persistTimelineEvent(room, {
+      eventType: "room_started",
+      occurredAt: room.createdAt,
+    });
     for (const participant of room.participants) {
       participant.session.roomId = room.id;
       this.send(participant.session, {
@@ -1000,6 +1038,64 @@ export class GameService {
     });
   }
 
+  private persistTimelineEvent(
+    room: Room,
+    input: {
+      eventType:
+        | "room_started"
+        | "typing_start"
+        | "typing_stop"
+        | "message_received"
+        | "message_visible";
+      actorParticipantId?: string;
+      messageId?: string;
+      occurredAt: number;
+      moderated?: boolean;
+    },
+  ): void {
+    if (!this.echoArchiveService) return;
+    room.timelineSequence += 1;
+    const sequence = room.timelineSequence;
+    const criticalBarrier = room.persistenceChain ?? Promise.resolve();
+    const previousEcho = room.echoPersistenceChain ?? Promise.resolve();
+    const next = Promise.all([criticalBarrier, previousEcho]).then(
+      async () => {
+        await this.echoArchiveService?.appendTimelineEvent({
+          gameId: room.id,
+          sequence,
+          ...input,
+        });
+      },
+    );
+    room.echoPersistenceChain = next.catch((error) => {
+      room.echoPersistenceFailed = true;
+      this.onPersistenceError?.(error, "append_timeline_event");
+    });
+  }
+
+  private stopParticipantTyping(
+    room: Room,
+    participant: Participant,
+  ): void {
+    if (participant.typingExpiry) {
+      this.clearTimer(participant.typingExpiry);
+      participant.typingExpiry = undefined;
+    }
+    if (!participant.typingActive) return;
+    participant.typingActive = false;
+    const occurredAt = this.now();
+    this.persistTimelineEvent(room, {
+      eventType: "typing_stop",
+      actorParticipantId: participant.databaseParticipantId,
+      occurredAt,
+    });
+    this.broadcastToOthers(
+      room,
+      participant.session.userId,
+      { type: "chat.typing_stop" },
+    );
+  }
+
   private persistGuess(room: Room, participant: Participant): void {
     if (!this.gameRepository || !participant.guess) return;
     this.enqueuePersistence(room, "submit_guess", async () => {
@@ -1042,6 +1138,11 @@ export class GameService {
       }
       const participant = room.participants[0];
       if (participant) {
+        this.persistTimelineEvent(room, {
+          eventType: "typing_start",
+          actorParticipantId: room.aiDatabaseParticipantId,
+          occurredAt: this.now(),
+        });
         this.send(participant.session, {
           type: "chat.typing_start",
           status: "正在组织语言…",
@@ -1082,6 +1183,7 @@ export class GameService {
           messages: room.messages,
           signal: controller.signal,
         });
+        const receivedAt = this.now();
         if (room.status !== "active" || controller.signal.aborted) {
           usageOutcome = "cancelled";
           return;
@@ -1101,17 +1203,32 @@ export class GameService {
           moderation.action === "REDACT"
             ? moderation.text
             : moderateAiOutput(rawReply);
+        const visibleAt = this.now();
         const message: ChatMessage = {
           id: randomUUID(),
           senderId: "ai",
           sender: "opponent",
           text: safeReply,
-          at: this.now(),
+          at: visibleAt,
           sequence: room.messages.length + 1,
           moderated: moderation.action !== "ALLOW",
         };
         room.messages.push(message);
         this.persistMessage(room, message);
+        this.persistTimelineEvent(room, {
+          eventType: "message_received",
+          actorParticipantId: room.aiDatabaseParticipantId,
+          messageId: message.id,
+          occurredAt: receivedAt,
+          moderated: moderation.action !== "ALLOW",
+        });
+        this.persistTimelineEvent(room, {
+          eventType: "message_visible",
+          actorParticipantId: room.aiDatabaseParticipantId,
+          messageId: message.id,
+          occurredAt: visibleAt,
+          moderated: moderation.action !== "ALLOW",
+        });
         this.broadcastMessage(room, message, false);
       } catch (error) {
         usageOutcome =
@@ -1154,6 +1271,11 @@ export class GameService {
         if (room.status === "active") {
           const current = room.participants[0];
           if (current) {
+            this.persistTimelineEvent(room, {
+              eventType: "typing_stop",
+              actorParticipantId: room.aiDatabaseParticipantId,
+              occurredAt: this.now(),
+            });
             this.send(current.session, {
               type: "chat.typing_stop",
             });
@@ -1182,6 +1304,9 @@ export class GameService {
     room.status = "settled";
     this.promoteCapacityQueue();
     this.cancelAi(room);
+    for (const participant of room.participants) {
+      this.stopParticipantTyping(room, participant);
+    }
     if (room.expiryTimer) {
       this.clearTimer(room.expiryTimer);
       room.expiryTimer = undefined;
@@ -1238,7 +1363,29 @@ export class GameService {
           }),
         });
       })
-        .then(() => this.publishSettlement(results))
+        .then(async () => {
+          await room.echoPersistenceChain;
+          let archiveConsentEligible = false;
+          try {
+            archiveConsentEligible =
+              (await this.echoArchiveService?.initializeArchiveCandidate({
+                gameId: room.id,
+                durationMs: results[0]?.view.durationMs ?? 0,
+                eligible:
+                  reason !== "disconnect" &&
+                  this.isArchiveConversationEligible(room) &&
+                  room.persistenceFailed !== true &&
+                  room.echoPersistenceFailed !== true,
+                now: this.now(),
+              })) ?? false;
+          } catch (error) {
+            this.onPersistenceError?.(
+              error,
+              "initialize_echo_archive_candidate",
+            );
+          }
+          this.publishSettlement(results, archiveConsentEligible);
+        })
         .catch(() => {
           for (const { participant } of results) {
             this.send(participant.session, {
@@ -1249,7 +1396,7 @@ export class GameService {
           }
         });
     } else {
-      this.publishSettlement(results);
+      this.publishSettlement(results, false);
     }
     if (this.roomStore) {
       void this.roomStore
@@ -1276,6 +1423,7 @@ export class GameService {
       participant: Participant;
       view: SettlementView;
     }>,
+    archiveConsentEligible: boolean,
   ): void {
     for (const { participant, view } of results) {
       this.send(participant.session, {
@@ -1285,6 +1433,7 @@ export class GameService {
         isCorrect: view.correct === true,
         outcome:
           view.correct === null ? "draw" : view.correct ? "won" : "lost",
+        archiveConsentEligible,
         stats: {
           durationSeconds: Math.round(view.durationMs / 1_000),
           messageCount: participant.messageCount,
@@ -1293,6 +1442,24 @@ export class GameService {
         },
       });
     }
+  }
+
+  private isArchiveConversationEligible(room: Room): boolean {
+    if (room.hadDisconnect || room.messages.length < 4) return false;
+    const actors =
+      room.opponentType === "ai"
+        ? [room.participants[0]?.session.userId, "ai"]
+        : room.participants.map(
+            (participant) => participant.session.userId,
+          );
+    return (
+      actors.length === 2 &&
+      actors.every(
+        (actor) =>
+          typeof actor === "string" &&
+          room.messages.some((message) => message.senderId === actor),
+      )
+    );
   }
 
   private participantFor(room: Room, userId: string): Participant {

@@ -82,6 +82,30 @@ export const feedbackDigestStatusEnum = pgEnum(
   "feedback_digest_status",
   ["pending", "sending", "sent", "failed"],
 );
+export const gameTimelineEventTypeEnum = pgEnum(
+  "game_timeline_event_type",
+  [
+    "room_started",
+    "typing_start",
+    "typing_stop",
+    "message_received",
+    "message_visible",
+  ],
+);
+export const echoArchiveStatusEnum = pgEnum("echo_archive_status", [
+  "pending",
+  "available",
+  "rejected",
+  "withdrawn",
+]);
+export const echoConsentDecisionEnum = pgEnum(
+  "echo_consent_decision",
+  ["approve", "decline"],
+);
+export const echoIdentityPatternEnum = pgEnum(
+  "echo_identity_pattern",
+  ["human_human", "human_ai", "ai_ai"],
+);
 
 export const users = pgTable(
   "users",
@@ -566,6 +590,389 @@ export const settlements = pgTable(
   ],
 );
 
+export interface GameTimelineMetadata {
+  moderated?: boolean;
+}
+
+export const gameTimelineEvents = pgTable(
+  "game_timeline_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    gameId: uuid("game_id")
+      .notNull()
+      .references(() => games.id, { onDelete: "cascade" }),
+    eventSequence: integer("event_sequence").notNull(),
+    eventType: gameTimelineEventTypeEnum("event_type").notNull(),
+    actorParticipantId: uuid("actor_participant_id").references(
+      () => gameParticipants.id,
+      { onDelete: "set null" },
+    ),
+    messageId: uuid("message_id").references(() => messages.id, {
+      onDelete: "set null",
+    }),
+    occurredAt: timestamp("occurred_at", {
+      withTimezone: true,
+      mode: "date",
+    }).notNull(),
+    metadata: jsonb("metadata")
+      .$type<GameTimelineMetadata>()
+      .notNull()
+      .default({}),
+  },
+  (table) => [
+    uniqueIndex("game_timeline_events_game_sequence_uidx").on(
+      table.gameId,
+      table.eventSequence,
+    ),
+    index("game_timeline_events_game_time_idx").on(
+      table.gameId,
+      table.occurredAt,
+    ),
+    check(
+      "game_timeline_events_sequence_positive",
+      sql`${table.eventSequence} > 0`,
+    ),
+  ],
+);
+
+export const echoArchives = pgTable(
+  "echo_archives",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    sourceGameId: uuid("source_game_id").references(() => games.id, {
+      onDelete: "set null",
+    }),
+    status: echoArchiveStatusEnum("status").notNull().default("pending"),
+    identityPattern: echoIdentityPatternEnum("identity_pattern").notNull(),
+    timelineVersion: text("timeline_version")
+      .notNull()
+      .default("echo-v1"),
+    durationMs: integer("duration_ms").notNull(),
+    consentExpiresAt: timestamp("consent_expires_at", {
+      withTimezone: true,
+      mode: "date",
+    }).notNull(),
+    publishedAt: timestamp("published_at", {
+      withTimezone: true,
+      mode: "date",
+    }),
+    withdrawnAt: timestamp("withdrawn_at", {
+      withTimezone: true,
+      mode: "date",
+    }),
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+      mode: "date",
+    })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("echo_archives_source_game_uidx").on(table.sourceGameId),
+    index("echo_archives_status_published_idx").on(
+      table.status,
+      table.publishedAt,
+    ),
+    check("echo_archives_duration_nonnegative", sql`${table.durationMs} >= 0`),
+  ],
+);
+
+export const echoConsents = pgTable(
+  "echo_consents",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    gameId: uuid("game_id")
+      .notNull()
+      .references(() => games.id, { onDelete: "cascade" }),
+    participantId: uuid("participant_id")
+      .notNull()
+      .references(() => gameParticipants.id, { onDelete: "cascade" }),
+    decision: echoConsentDecisionEnum("decision").notNull(),
+    clientRequestId: uuid("client_request_id").notNull(),
+    decidedAt: timestamp("decided_at", {
+      withTimezone: true,
+      mode: "date",
+    })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("echo_consents_game_participant_uidx").on(
+      table.gameId,
+      table.participantId,
+    ),
+    uniqueIndex("echo_consents_client_request_uidx").on(table.clientRequestId),
+  ],
+);
+
+export const echoArchiveSources = pgTable(
+  "echo_archive_sources",
+  {
+    archiveId: uuid("archive_id")
+      .notNull()
+      .references(() => echoArchives.id, { onDelete: "cascade" }),
+    publicSeat: integer("public_seat").notNull(),
+    sourceParticipantId: uuid("source_participant_id").references(
+      () => gameParticipants.id,
+      { onDelete: "set null" },
+    ),
+    sourceUserId: uuid("source_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    identityType: identityTypeEnum("identity_type").notNull(),
+  },
+  (table) => [
+    primaryKey({
+      name: "echo_archive_sources_pk",
+      columns: [table.archiveId, table.publicSeat],
+    }),
+    uniqueIndex("echo_archive_sources_participant_uidx").on(
+      table.archiveId,
+      table.sourceParticipantId,
+    ),
+    index("echo_archive_sources_user_idx").on(table.sourceUserId),
+    check(
+      "echo_archive_sources_seat_valid",
+      sql`${table.publicSeat} BETWEEN 0 AND 1`,
+    ),
+  ],
+);
+
+export const echoArchiveEvents = pgTable(
+  "echo_archive_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    archiveId: uuid("archive_id")
+      .notNull()
+      .references(() => echoArchives.id, { onDelete: "cascade" }),
+    eventSequence: integer("event_sequence").notNull(),
+    eventType: gameTimelineEventTypeEnum("event_type").notNull(),
+    publicSeat: integer("public_seat").notNull(),
+    offsetMs: integer("offset_ms").notNull(),
+    content: text("content"),
+    moderated: boolean("moderated").notNull().default(false),
+  },
+  (table) => [
+    uniqueIndex("echo_archive_events_archive_sequence_uidx").on(
+      table.archiveId,
+      table.eventSequence,
+    ),
+    index("echo_archive_events_archive_offset_idx").on(
+      table.archiveId,
+      table.offsetMs,
+    ),
+    check(
+      "echo_archive_events_seat_valid",
+      sql`${table.publicSeat} BETWEEN 0 AND 1`,
+    ),
+    check("echo_archive_events_offset_nonnegative", sql`${table.offsetMs} >= 0`),
+  ],
+);
+
+export const echoAssignments = pgTable(
+  "echo_assignments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    archiveId: uuid("archive_id")
+      .notNull()
+      .references(() => echoArchives.id, { onDelete: "cascade" }),
+    reviewerUserId: uuid("reviewer_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    assignedAt: timestamp("assigned_at", {
+      withTimezone: true,
+      mode: "date",
+    })
+      .notNull()
+      .defaultNow(),
+    expiresAt: timestamp("expires_at", {
+      withTimezone: true,
+      mode: "date",
+    }).notNull(),
+    completedAt: timestamp("completed_at", {
+      withTimezone: true,
+      mode: "date",
+    }),
+  },
+  (table) => [
+    uniqueIndex("echo_assignments_archive_reviewer_uidx").on(
+      table.archiveId,
+      table.reviewerUserId,
+    ),
+    index("echo_assignments_reviewer_expiry_idx").on(
+      table.reviewerUserId,
+      table.expiresAt,
+    ),
+  ],
+);
+
+export const echoJudgments = pgTable(
+  "echo_judgments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    assignmentId: uuid("assignment_id")
+      .notNull()
+      .references(() => echoAssignments.id, { onDelete: "restrict" }),
+    archiveId: uuid("archive_id")
+      .notNull()
+      .references(() => echoArchives.id, { onDelete: "restrict" }),
+    reviewerUserId: uuid("reviewer_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    guessA: identityTypeEnum("guess_a").notNull(),
+    confidenceA: integer("confidence_a").notNull(),
+    guessB: identityTypeEnum("guess_b").notNull(),
+    confidenceB: integer("confidence_b").notNull(),
+    correctCount: integer("correct_count").notNull(),
+    bothCorrect: boolean("both_correct").notNull(),
+    scoreDelta: integer("score_delta").notNull(),
+    confidenceCalibration: integer("confidence_calibration").notNull(),
+    clientRequestId: uuid("client_request_id").notNull(),
+    submittedAt: timestamp("submitted_at", {
+      withTimezone: true,
+      mode: "date",
+    })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("echo_judgments_assignment_uidx").on(table.assignmentId),
+    uniqueIndex("echo_judgments_client_request_uidx").on(table.clientRequestId),
+    index("echo_judgments_reviewer_submitted_idx").on(
+      table.reviewerUserId,
+      table.submittedAt,
+    ),
+    check(
+      "echo_judgments_confidence_range",
+      sql`${table.confidenceA} BETWEEN 0 AND 100 AND ${table.confidenceB} BETWEEN 0 AND 100`,
+    ),
+    check(
+      "echo_judgments_correct_count_range",
+      sql`${table.correctCount} BETWEEN 0 AND 2`,
+    ),
+    check(
+      "echo_judgments_calibration_range",
+      sql`${table.confidenceCalibration} BETWEEN 0 AND 100`,
+    ),
+  ],
+);
+
+export const echoReviewerStats = pgTable("echo_reviewer_stats", {
+  userId: uuid("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  reviewsPlayed: integer("reviews_played").notNull().default(0),
+  identitiesCorrect: integer("identities_correct").notNull().default(0),
+  perfectJudgments: integer("perfect_judgments").notNull().default(0),
+  score: integer("score").notNull().default(0),
+  updatedAt: timestamp("updated_at", {
+    withTimezone: true,
+    mode: "date",
+  })
+    .notNull()
+    .defaultNow(),
+});
+
+export const echoCommentAuthors = pgTable(
+  "echo_comment_authors",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    archiveId: uuid("archive_id")
+      .notNull()
+      .references(() => echoArchives.id, { onDelete: "cascade" }),
+    reviewerUserId: uuid("reviewer_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    alias: text("alias").notNull(),
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+      mode: "date",
+    })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("echo_comment_authors_archive_reviewer_uidx").on(
+      table.archiveId,
+      table.reviewerUserId,
+    ),
+    uniqueIndex("echo_comment_authors_archive_alias_uidx").on(
+      table.archiveId,
+      table.alias,
+    ),
+  ],
+);
+
+export const echoComments = pgTable(
+  "echo_comments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    archiveId: uuid("archive_id")
+      .notNull()
+      .references(() => echoArchives.id, { onDelete: "cascade" }),
+    archiveEventId: uuid("archive_event_id")
+      .notNull()
+      .references(() => echoArchiveEvents.id, { onDelete: "cascade" }),
+    authorId: uuid("author_id")
+      .notNull()
+      .references(() => echoCommentAuthors.id, { onDelete: "cascade" }),
+    authorAssignmentId: uuid("author_assignment_id").references(
+      () => echoAssignments.id,
+      { onDelete: "set null" },
+    ),
+    content: text("content").notNull(),
+    clientRequestId: uuid("client_request_id").notNull(),
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+      mode: "date",
+    })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("echo_comments_client_request_uidx").on(
+      table.clientRequestId,
+    ),
+    index("echo_comments_archive_event_created_idx").on(
+      table.archiveId,
+      table.archiveEventId,
+      table.createdAt,
+    ),
+    index("echo_comments_author_created_idx").on(
+      table.authorId,
+      table.createdAt,
+    ),
+    check(
+      "echo_comments_content_length",
+      sql`char_length(${table.content}) BETWEEN 2 AND 200`,
+    ),
+  ],
+);
+
+export const echoCommentLikes = pgTable(
+  "echo_comment_likes",
+  {
+    commentId: uuid("comment_id")
+      .notNull()
+      .references(() => echoComments.id, { onDelete: "cascade" }),
+    reviewerUserId: uuid("reviewer_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+      mode: "date",
+    })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({
+      name: "echo_comment_likes_pk",
+      columns: [table.commentId, table.reviewerUserId],
+    }),
+  ],
+);
+
 export interface ReportEvidence {
   opponentType: "human" | "ai";
   messageIds: string[];
@@ -843,6 +1250,15 @@ export type GuessRow = typeof guesses.$inferSelect;
 export type NewGuessRow = typeof guesses.$inferInsert;
 export type SettlementRow = typeof settlements.$inferSelect;
 export type NewSettlementRow = typeof settlements.$inferInsert;
+export type GameTimelineEventRow = typeof gameTimelineEvents.$inferSelect;
+export type NewGameTimelineEventRow = typeof gameTimelineEvents.$inferInsert;
+export type EchoArchiveRow = typeof echoArchives.$inferSelect;
+export type EchoConsentRow = typeof echoConsents.$inferSelect;
+export type EchoArchiveSourceRow = typeof echoArchiveSources.$inferSelect;
+export type EchoArchiveEventRow = typeof echoArchiveEvents.$inferSelect;
+export type EchoAssignmentRow = typeof echoAssignments.$inferSelect;
+export type EchoJudgmentRow = typeof echoJudgments.$inferSelect;
+export type EchoReviewerStatsRow = typeof echoReviewerStats.$inferSelect;
 export type ReportRow = typeof reports.$inferSelect;
 export type NewReportRow = typeof reports.$inferInsert;
 export type ModerationEventRow = typeof moderationEvents.$inferSelect;

@@ -27,6 +27,14 @@ import {
 } from "./local-record";
 import { pickOpeningQuestions } from "./opening-questions";
 import {
+  shouldStartTypingHeartbeat,
+  shouldStopTyping,
+  TYPING_HEARTBEAT_INTERVAL_MS,
+  TYPING_IDLE_TIMEOUT_MS,
+} from "./typing-heartbeat";
+import { ArchiveConsentDialog } from "./echo-archive/ArchiveConsentDialog";
+import { EchoArchivePage } from "./echo-archive/EchoArchivePage";
+import {
   bootstrapAccount,
   DemoTransport,
   forgotAccountPassword,
@@ -62,6 +70,7 @@ const BILIBILI_SPACE_URL =
 const DOUYIN_SPACE_URL = "https://v.douyin.com/l_xBqIYez08/";
 
 type AuthMode = "login" | "register" | "forgot" | "reset" | "verify";
+type ActiveView = "game" | "record" | "echo";
 
 interface InitialAuthRoute {
   mode: AuthMode;
@@ -147,7 +156,9 @@ export default function App() {
   const [confidence, setConfidence] = useState(68);
   const [reportOpen, setReportOpen] = useState(false);
   const [leaveOpen, setLeaveOpen] = useState(false);
-  const [recordOpen, setRecordOpen] = useState(false);
+  const [activeView, setActiveView] = useState<ActiveView>("game");
+  const [archiveConsentGameId, setArchiveConsentGameId] =
+    useState<string | null>(null);
   const [creatorOpen, setCreatorOpen] = useState(false);
   const [supportOpen, setSupportOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
@@ -171,6 +182,7 @@ export default function App() {
   const gateEndRef = useRef<number | null>(null);
   const delayedMatchTimerRef = useRef<number | null>(null);
   const typingTimerRef = useRef<number | null>(null);
+  const typingHeartbeatRef = useRef<number | null>(null);
   const hasSentTypingRef = useRef(false);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
@@ -277,6 +289,9 @@ export default function App() {
       transportRef.current?.close();
       if (typingTimerRef.current !== null) {
         window.clearTimeout(typingTimerRef.current);
+      }
+      if (typingHeartbeatRef.current !== null) {
+        window.clearInterval(typingHeartbeatRef.current);
       }
       if (delayedMatchTimerRef.current !== null) {
         window.clearTimeout(delayedMatchTimerRef.current);
@@ -390,6 +405,13 @@ export default function App() {
           break;
         }
         case "game.finished":
+          if (
+            event.archiveConsentEligible &&
+            !stateRef.current.demoMode &&
+            stateRef.current.gameId
+          ) {
+            setArchiveConsentGameId(stateRef.current.gameId);
+          }
           dispatch({
             type: "GAME_FINISHED",
             result: {
@@ -557,6 +579,8 @@ export default function App() {
       setAccountSession(null);
       setLocalDemoBypass(false);
       setNickname("");
+      setActiveView("game");
+      setArchiveConsentGameId(null);
       dispatch({ type: "RESET_ALL" });
       setAuthMode("login");
       setAuthMessage("已安全退出当前会话。");
@@ -710,20 +734,43 @@ export default function App() {
 
   function updateMessageDraft(value: string) {
     setMessageDraft(value);
-    if (!hasSentTypingRef.current && value.trim()) {
+    if (shouldStopTyping(value)) {
+      stopTyping();
+      return;
+    }
+    if (!hasSentTypingRef.current) {
       sendSafely({ type: "chat.typing_start" });
       hasSentTypingRef.current = true;
+    }
+    if (
+      shouldStartTypingHeartbeat(
+        value,
+        typingHeartbeatRef.current !== null,
+      )
+    ) {
+      typingHeartbeatRef.current = window.setInterval(() => {
+        if (hasSentTypingRef.current) {
+          sendSafely({ type: "chat.typing_start" });
+        }
+      }, TYPING_HEARTBEAT_INTERVAL_MS);
     }
     if (typingTimerRef.current !== null) {
       window.clearTimeout(typingTimerRef.current);
     }
-    typingTimerRef.current = window.setTimeout(stopTyping, 900);
+    typingTimerRef.current = window.setTimeout(
+      stopTyping,
+      TYPING_IDLE_TIMEOUT_MS,
+    );
   }
 
   function stopTyping() {
     if (typingTimerRef.current !== null) {
       window.clearTimeout(typingTimerRef.current);
       typingTimerRef.current = null;
+    }
+    if (typingHeartbeatRef.current !== null) {
+      window.clearInterval(typingHeartbeatRef.current);
+      typingHeartbeatRef.current = null;
     }
     if (hasSentTypingRef.current) {
       sendSafely({ type: "chat.typing_stop" });
@@ -764,6 +811,7 @@ export default function App() {
   }
 
   function playAgain() {
+    setArchiveConsentGameId(null);
     dispatch({ type: "RESET_GAME" });
     setMessageDraft("");
     setPendingGuess(null);
@@ -784,6 +832,7 @@ export default function App() {
       delayedMatchTimerRef.current = null;
     }
     dispatch({ type: "RESET_ALL" });
+    setActiveView("game");
   }
 
   function leaveGame() {
@@ -793,6 +842,8 @@ export default function App() {
     setLeaveOpen(false);
     dispatch({ type: "RESET_ALL" });
     setNickname("");
+    setActiveView("game");
+    setArchiveConsentGameId(null);
   }
 
   const gateRemaining = Math.max(0, (state.gateEndsAt ?? now) - now);
@@ -835,11 +886,12 @@ export default function App() {
         </div>
         <div className="header-actions">
           {!showAccountAccess &&
+            activeView === "game" &&
             (state.screen === "onboarding" || state.screen === "finished") && (
             <button
               className="header-record"
               type="button"
-              onClick={() => setRecordOpen(true)}
+              onClick={() => setActiveView("record")}
             >
               <span>账户数据</span>
               <strong>{String(localRecord.rounds).padStart(2, "0")} 局</strong>
@@ -919,11 +971,11 @@ export default function App() {
           />
         )}
 
-        {!showAccountAccess && recordOpen && (
+        {!showAccountAccess && activeView === "record" && (
           <AccountRecordPage
             record={localRecord}
             accountEmail={accountSession?.user.email}
-            onBack={() => setRecordOpen(false)}
+            onBack={() => setActiveView("game")}
             onCreator={() => setCreatorOpen(true)}
             onSupport={() => setSupportOpen(true)}
             onFeedback={() => {
@@ -934,7 +986,16 @@ export default function App() {
           />
         )}
 
-        {!showAccountAccess && !recordOpen && state.screen === "onboarding" && (
+        {!showAccountAccess &&
+          activeView === "echo" &&
+          accountSession && (
+          <EchoArchivePage
+            csrfToken={accountSession.csrfToken}
+            onBack={() => setActiveView("game")}
+          />
+        )}
+
+        {!showAccountAccess && activeView === "game" && state.screen === "onboarding" && (
           <Onboarding
             nickname={nickname}
             thinkingStatus={thinkingStatus}
@@ -945,10 +1006,11 @@ export default function App() {
             onThinkingStatusChange={setThinkingStatus}
             onSubmit={submitProfile}
             onDemo={startDemo}
+            onEcho={() => setActiveView("echo")}
           />
         )}
 
-        {!showAccountAccess && !recordOpen && state.screen === "matching" && (
+        {!showAccountAccess && activeView === "game" && state.screen === "matching" && (
           <SearchMatching
             nickname={state.nickname}
             elapsed={searchElapsed}
@@ -960,7 +1022,7 @@ export default function App() {
           />
         )}
 
-        {!showAccountAccess && !recordOpen && state.screen === "queue" && (
+        {!showAccountAccess && activeView === "game" && state.screen === "queue" && (
           <CapacityQueue
             nickname={state.nickname}
             position={state.queuePosition ?? 1}
@@ -971,7 +1033,7 @@ export default function App() {
           />
         )}
 
-        {!showAccountAccess && !recordOpen && state.screen === "admission" && (
+        {!showAccountAccess && activeView === "game" && state.screen === "admission" && (
           <AdmissionGate
             nickname={state.nickname}
             progress={matchProgress}
@@ -983,7 +1045,7 @@ export default function App() {
           />
         )}
 
-        {!showAccountAccess && !recordOpen && state.screen === "chat" && (
+        {!showAccountAccess && activeView === "game" && state.screen === "chat" && (
           <ChatRoom
             nickname={state.nickname}
             opponentLabel={state.opponentLabel}
@@ -1010,7 +1072,7 @@ export default function App() {
         )}
 
         {!showAccountAccess &&
-          !recordOpen &&
+          activeView === "game" &&
           state.screen === "finished" &&
           state.result && (
           <ResultScreen
@@ -1069,6 +1131,14 @@ export default function App() {
             setFeedbackMessage(null);
           }}
           onSubmit={handleFeedbackSubmit}
+        />
+      )}
+
+      {archiveConsentGameId && accountSession && (
+        <ArchiveConsentDialog
+          csrfToken={accountSession.csrfToken}
+          gameId={archiveConsentGameId}
+          onClose={() => setArchiveConsentGameId(null)}
         />
       )}
     </div>
@@ -1344,6 +1414,7 @@ interface OnboardingProps {
   onThinkingStatusChange: (value: string) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onDemo: () => void;
+  onEcho: () => void;
 }
 
 function Onboarding({
@@ -1356,6 +1427,7 @@ function Onboarding({
   onThinkingStatusChange,
   onSubmit,
   onDemo,
+  onEcho,
 }: OnboardingProps) {
   return (
     <section className="onboarding page-grid">
@@ -1459,6 +1531,23 @@ function Onboarding({
             <small>无需账户 · 约 5 分钟</small>
           </button>
         </div>
+
+        <button
+          className="echo-entry-action"
+          type="button"
+          disabled={!onlineEnabled || isStarting}
+          onClick={onEcho}
+        >
+          <span>
+            <strong>回声档案</strong>
+            <small>
+              {onlineEnabled
+                ? "作为回声鉴证官，判读一段匿名历史对话"
+                : "登录账户后才可领取匿名档案"}
+            </small>
+          </span>
+          <i aria-hidden="true">02 ↗</i>
+        </button>
 
         <p className="privacy-note">
           继续即表示你同意文明交流。不要发送真实姓名、地址或联系方式。
@@ -1742,7 +1831,11 @@ function ChatRoom({
       <aside className="chat-sidebar">
         <div>
           <p className="eyebrow">ACTIVE ROOM / 01</p>
-          <h1>观察。<br />试探。<br /><span>判断。</span></h1>
+          <h1 className="observation-mantra" aria-label="观察。试探。判断。">
+            <span>观察。</span>
+            <span>试探。</span>
+            <span>判断。</span>
+          </h1>
         </div>
         <dl className="session-facts">
           <div>
@@ -2513,6 +2606,29 @@ function FeedbackDialog({
   );
 }
 
+const RESULT_STYLE_OPTIONS = [
+  {
+    id: "signal",
+    index: "01",
+    label: "信号档案",
+    description: "实验网格与荧光信号",
+  },
+  {
+    id: "noir",
+    index: "02",
+    label: "黑箱判决",
+    description: "深色高反差揭晓",
+  },
+  {
+    id: "split",
+    index: "03",
+    label: "双向证词",
+    description: "判断与身份并置",
+  },
+] as const;
+
+type ResultStyle = (typeof RESULT_STYLE_OPTIONS)[number]["id"];
+
 function ResultScreen({
   result,
   nickname,
@@ -2526,58 +2642,279 @@ function ResultScreen({
   onAgain: () => void;
   onHome: () => void;
 }) {
+  const [resultStyle, setResultStyle] = useState<ResultStyle>(
+    () =>
+      RESULT_STYLE_OPTIONS[
+        Math.floor(Math.random() * RESULT_STYLE_OPTIONS.length)
+      ].id,
+  );
+  const [shareStatus, setShareStatus] = useState<
+    "idle" | "downloaded" | "copied" | "failed"
+  >("idle");
+  const actualIdentity = result.opponentType === "human" ? "真人" : "AI";
+  const playerGuess =
+    result.guess === null ? "未提交" : result.guess === "human" ? "真人" : "AI";
+  const finalMessageCount = result.stats?.messageCount ?? messageCount;
+  const finalScore =
+    result.stats?.scoreDelta ?? (result.isCorrect ? 12 : 0);
+  const finalStreak = result.stats?.streak ?? (result.isCorrect ? 1 : 0);
+  const shareText = [
+    `我在 TURING? 中判断${result.isCorrect ? "正确" : "失误"}。`,
+    `屏幕另一边是${actualIdentity}，我的判断是${playerGuess}。`,
+    `${finalMessageCount} 条消息 · ${finalScore >= 0 ? "+" : ""}${finalScore} 分 · ${finalStreak} 连胜`,
+    "你能分辨屏幕另一边是谁吗？",
+  ].join("\n");
+
+  async function copyResult() {
+    try {
+      await navigator.clipboard.writeText(shareText);
+      setShareStatus("copied");
+    } catch {
+      setShareStatus("failed");
+    }
+  }
+
+  async function downloadResultCard() {
+    try {
+      await document.fonts?.ready;
+      const canvas = document.createElement("canvas");
+      canvas.width = 1200;
+      canvas.height = 630;
+      const context = canvas.getContext("2d");
+      if (!context) {
+        throw new Error("Canvas is unavailable");
+      }
+
+      const palette =
+        resultStyle === "noir"
+          ? {
+              background: "#10110f",
+              surface: "#171915",
+              ink: "#fafaf5",
+              muted: "#aeb1a7",
+              accent: result.isCorrect ? "#b8ff28" : "#ff7a70",
+            }
+          : resultStyle === "split"
+            ? {
+                background: "#ebe9df",
+                surface: "#fafaf5",
+                ink: "#10110f",
+                muted: "#6a6c64",
+                accent: result.isCorrect ? "#b8ff28" : "#ff7a70",
+              }
+            : {
+                background: "#f2f2ed",
+                surface: "#fafaf5",
+                ink: "#10110f",
+                muted: "#6a6c64",
+                accent: result.isCorrect ? "#b8ff28" : "#ff7a70",
+              };
+
+      context.fillStyle = palette.background;
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      if (resultStyle === "split") {
+        context.fillStyle = palette.surface;
+        context.fillRect(680, 28, 492, 574);
+      }
+
+      context.strokeStyle =
+        resultStyle === "noir"
+          ? "rgba(250, 250, 245, 0.09)"
+          : "rgba(16, 17, 15, 0.08)";
+      context.lineWidth = 1;
+      [300, 600, 900].forEach((x) => {
+        context.beginPath();
+        context.moveTo(x, 0);
+        context.lineTo(x, canvas.height);
+        context.stroke();
+      });
+
+      context.beginPath();
+      context.arc(1015, 154, 210, 0, Math.PI * 2);
+      context.fillStyle = palette.accent;
+      context.fill();
+
+      context.strokeStyle = palette.ink;
+      context.lineWidth = 3;
+      context.strokeRect(28, 28, 1144, 574);
+
+      context.fillStyle = palette.ink;
+      context.textBaseline = "top";
+      context.font =
+        '800 30px "Space Grotesk", "Noto Sans SC", "Microsoft YaHei", sans-serif';
+      context.fillText("TURING?", 64, 58);
+
+      context.fillStyle = palette.muted;
+      context.font =
+        '700 16px "Space Grotesk", "Noto Sans SC", "Microsoft YaHei", sans-serif';
+      context.fillText("IDENTITY REVEALED / RESULT VERIFIED", 64, 112);
+
+      context.fillStyle = palette.ink;
+      context.font =
+        '900 172px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+      context.fillText(actualIdentity, 56, 146);
+
+      context.font =
+        '800 42px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+      context.fillText(result.isCorrect ? "判断正确" : "判断失误", 720, 238);
+
+      context.fillStyle = palette.muted;
+      context.font =
+        '600 22px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+      context.fillText(`你的判断：${playerGuess}`, 724, 304);
+
+      const statTop = 438;
+      const statWidth = 320;
+      const stats = [
+        ["对话消息", String(finalMessageCount)],
+        ["本局得分", `${finalScore >= 0 ? "+" : ""}${finalScore}`],
+        ["当前连胜", String(finalStreak)],
+      ];
+      stats.forEach(([label, value], index) => {
+        const x = 64 + index * statWidth;
+        context.strokeStyle = palette.ink;
+        context.lineWidth = 1;
+        context.strokeRect(x, statTop, statWidth, 108);
+        context.fillStyle = palette.muted;
+        context.font =
+          '700 14px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+        context.fillText(label, x + 18, statTop + 16);
+        context.fillStyle = palette.ink;
+        context.font =
+          '800 34px "Space Grotesk", "Noto Sans SC", "Microsoft YaHei", sans-serif';
+        context.fillText(value, x + 18, statTop + 48);
+      });
+
+      context.fillStyle = palette.muted;
+      context.font =
+        '700 14px "Space Grotesk", "Noto Sans SC", "Microsoft YaHei", sans-serif';
+      context.fillText(
+        "CAN YOU TELL WHO IS ON THE OTHER SIDE?",
+        64,
+        566,
+      );
+      context.textAlign = "right";
+      context.fillText("EXP. / 001", 1138, 566);
+
+      const blob = await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob((value) => {
+          if (value) resolve(value);
+          else reject(new Error("Unable to encode result card"));
+        }, "image/png");
+      });
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = `turing-result-${Date.now()}.png`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000);
+      setShareStatus("downloaded");
+    } catch {
+      setShareStatus("failed");
+    }
+  }
+
   return (
     <section className={`result-screen ${result.isCorrect ? "is-win" : "is-loss"}`}>
       <div className="result-kicker">
         <span>IDENTITY REVEALED</span>
         <span>{result.isCorrect ? "判断成立" : "判断偏差"}</span>
       </div>
-      <div className="result-identity">
-        <p className="result-step">02 / 真实身份</p>
-        <p>屏幕另一边是</p>
-        <h1>{result.opponentType === "human" ? "真人" : "AI"}</h1>
-        <span aria-hidden="true">
-          {result.opponentType === "human" ? "HUMAN" : "MACHINE"}
-        </span>
+      <aside className="result-style-switcher" aria-label="结算卡风格">
+        <span>RESULT STYLE</span>
+        {RESULT_STYLE_OPTIONS.map((option) => (
+          <button
+            key={option.id}
+            type="button"
+            className={resultStyle === option.id ? "is-active" : ""}
+            aria-pressed={resultStyle === option.id}
+            onClick={() => setResultStyle(option.id)}
+          >
+            <i>{option.index}</i>
+            <strong>{option.label}</strong>
+            <small>{option.description}</small>
+          </button>
+        ))}
+      </aside>
+      <div
+        className={`result-card style-${resultStyle}`}
+        aria-label="本局结果战绩卡"
+      >
+        <div className="result-card-signal" aria-hidden="true">
+          RESULT / VERIFIED
+        </div>
+        <div className="result-identity">
+          <p className="result-step">02 / 真实身份</p>
+          <p>屏幕另一边是</p>
+          <h1>{actualIdentity}</h1>
+          <span aria-hidden="true">
+            {result.opponentType === "human" ? "HUMAN" : "MACHINE"}
+          </span>
+        </div>
+        <div className="result-verdict">
+          <div className="verdict-mark" aria-hidden="true">
+            {result.isCorrect ? "✓" : "×"}
+          </div>
+          <div>
+            <p className="result-step">01 / 你的判断</p>
+            <p>{nickname}，你判断对方是</p>
+            <strong>{playerGuess}</strong>
+            <span>
+              {result.isCorrect ? "你的判断正确。" : "这次，对方骗过了你。"}
+            </span>
+          </div>
+        </div>
+        <dl className="result-stats">
+          <div>
+            <dt>对话消息</dt>
+            <dd>{finalMessageCount}</dd>
+          </div>
+          <div>
+            <dt>本局得分</dt>
+            <dd>
+              {finalScore >= 0 ? "+" : ""}
+              {finalScore}
+            </dd>
+          </div>
+          <div>
+            <dt>当前连胜</dt>
+            <dd>{finalStreak}</dd>
+          </div>
+        </dl>
+        <div className="result-card-footer">
+          <strong>TURING?</strong>
+          <span>CAN YOU TELL WHO IS ON THE OTHER SIDE?</span>
+          <i aria-hidden="true">EXP. / 001</i>
+        </div>
       </div>
-      <div className="result-verdict">
-        <div className="verdict-mark" aria-hidden="true">
-          {result.isCorrect ? "✓" : "×"}
-        </div>
-        <div>
-          <p className="result-step">01 / 你的判断</p>
-          <p>{nickname}，你判断对方是</p>
-          <strong>
-            {result.guess === null
-              ? "未提交"
-              : result.guess === "human"
-                ? "真人"
-                : "AI"}
-          </strong>
-          <span>{result.isCorrect ? "你的判断正确。" : "这次，对方骗过了你。"}</span>
-        </div>
-      </div>
-      <dl className="result-stats">
-        <div>
-          <dt>对话消息</dt>
-          <dd>{result.stats?.messageCount ?? messageCount}</dd>
-        </div>
-        <div>
-          <dt>本局得分</dt>
-          <dd>+{result.stats?.scoreDelta ?? (result.isCorrect ? 12 : 0)}</dd>
-        </div>
-        <div>
-          <dt>当前连胜</dt>
-          <dd>{result.stats?.streak ?? (result.isCorrect ? 1 : 0)}</dd>
-        </div>
-      </dl>
       <div className="result-actions">
         <button className="primary-action" type="button" onClick={onAgain}>
           再来一局 <span aria-hidden="true">↗</span>
         </button>
+        <button
+          className="share-action"
+          type="button"
+          onClick={() => void downloadResultCard()}
+        >
+          下载结果卡 <span aria-hidden="true">↓</span>
+        </button>
+        <button
+          className="text-action"
+          type="button"
+          onClick={() => void copyResult()}
+        >
+          复制结果
+        </button>
         <button className="text-action" type="button" onClick={onHome}>
           返回首页
         </button>
+        <span className="share-status" role="status" aria-live="polite">
+          {shareStatus === "copied" && "结果已复制"}
+          {shareStatus === "downloaded" && "结果卡已下载"}
+          {shareStatus === "failed" && "暂时无法生成结果卡，请稍后重试"}
+        </span>
       </div>
     </section>
   );

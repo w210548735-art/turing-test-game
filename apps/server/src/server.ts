@@ -8,6 +8,9 @@ import {
   profileInputSchema,
   registerAccountRequestSchema,
   resetPasswordRequestSchema,
+  submitEchoCommentRequestSchema,
+  submitArchiveConsentRequestSchema,
+  submitEchoJudgmentRequestSchema,
   submitFeedbackRequestSchema,
   verifyEmailRequestSchema,
   type ClientEvent,
@@ -61,6 +64,7 @@ import {
   type FeedbackEmailDelivery,
   type FeedbackRepositoryPort,
 } from "./feedback/index.js";
+import { EchoArchiveService } from "./echo/index.js";
 import {
   DEFAULT_MAX_CONCURRENT_ROOMS,
   DEFAULT_MAX_QUEUE_SIZE,
@@ -113,6 +117,8 @@ const DEFAULT_PROFILE = {
 const SESSION_TTL_MS = 24 * 60 * 60_000;
 const SESSION_IDLE_TTL_MS = 2 * 60 * 60_000;
 const DEVICE_TTL_SECONDS = 365 * 24 * 60 * 60;
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -155,6 +161,10 @@ export interface ServerContext {
   feedback: {
     configured: boolean;
     worker?: FeedbackDigestWorker;
+  };
+  echo: {
+    configured: boolean;
+    service?: EchoArchiveService;
   };
 }
 
@@ -357,6 +367,9 @@ export async function buildServer(
   const databaseReportRepository = database.available
     ? new DatabaseReportRepository(database.db)
     : undefined;
+  const echoArchiveService = database.available
+    ? new EchoArchiveService(database.db)
+    : undefined;
   const databaseBanRepository = database.available
     ? new DatabaseBanRepository(database.db)
     : undefined;
@@ -377,6 +390,7 @@ export async function buildServer(
     roomStore,
     gameRepository,
     reportRepository: databaseReportRepository,
+    echoArchiveService,
     moderation,
     maxConcurrentRooms: positiveIntegerEnvironment(
       "MATCH_MAX_CONCURRENT_ROOMS",
@@ -626,6 +640,7 @@ export async function buildServer(
   async function consumeGameRateLimit(
     operation: RateLimitOperation,
     session: Session,
+    roomId = session.roomId,
   ): Promise<void> {
     const decision = await compositeLimiter.consume({
       operation,
@@ -634,7 +649,7 @@ export async function buildServer(
         deviceId: session.deviceId,
         sessionId: session.sessionId,
         userId: session.userId,
-        roomId: session.roomId,
+        roomId,
       },
     });
     if (!decision.allowed) {
@@ -809,7 +824,10 @@ export async function buildServer(
       path === "/api/session" ||
       path === "/api/profile" ||
       path === "/api/ws-ticket" ||
-      path === "/api/session/logout";
+      path === "/api/session/logout" ||
+      path === "/api/feedback" ||
+      path.startsWith("/api/games/") ||
+      path.startsWith("/api/echo/");
     const decision = originPolicy.evaluateHttp(request.method, origin);
     if (
       !decision.allowed &&
@@ -975,6 +993,363 @@ export async function buildServer(
       );
       reply.status(202);
       return result;
+    },
+  );
+
+  app.put<{
+    Params: { gameId: string };
+    Body: unknown;
+  }>(
+    "/api/games/:gameId/archive-consent",
+    async (request) => {
+      const session = await sessionFromRequest(request);
+      if (!session?.accountAuthenticated) {
+        throw new AppError(
+          "ACCOUNT_REQUIRED",
+          "请先登录已验证的账号，再决定是否保存对话。",
+          401,
+        );
+      }
+      requireCsrf(request, session);
+      await authService.assertAccountCapability(session.userId, "ACCOUNT");
+      if (!echoArchiveService || !UUID_PATTERN.test(request.params.gameId)) {
+        throw new AppError(
+          "ARCHIVE_CONSENT_UNAVAILABLE",
+          "这局对话暂时无法保存，请继续体验其他对局。",
+          409,
+        );
+      }
+      const parsed = submitArchiveConsentRequestSchema.safeParse(request.body);
+      if (!parsed.success) {
+        throw new AppError(
+          "INVALID_ARCHIVE_CONSENT",
+          "保存选择格式无效。",
+          400,
+        );
+      }
+      await consumeGameRateLimit("echo.consent", session);
+      await echoArchiveService.submitConsent({
+        gameId: request.params.gameId,
+        userId: session.databaseUserId ?? session.userId,
+        decision: parsed.data.decision,
+        clientRequestId: parsed.data.clientRequestId,
+      });
+      return {
+        accepted: true as const,
+        message: "你的选择已经悄悄记下啦 ฅ( ̳• ·̫ • ̳ฅ)",
+      };
+    },
+  );
+
+  app.post("/api/echo/assignments", async (request) => {
+    const session = await sessionFromRequest(request);
+    if (!session?.accountAuthenticated) {
+      throw new AppError(
+        "ACCOUNT_REQUIRED",
+        "请先登录已验证的账号，再成为回声鉴证官。",
+        401,
+      );
+    }
+    requireCsrf(request, session);
+    await authService.assertAccountCapability(session.userId, "MATCH");
+    if (!echoArchiveService) {
+      throw new AppError(
+        "ECHO_ARCHIVE_UNAVAILABLE",
+        "暂时没有新的回声档案，请稍后再来看看。",
+        404,
+      );
+    }
+    await consumeGameRateLimit("echo.assignment", session);
+    return echoArchiveService.createAssignment(
+      session.databaseUserId ?? session.userId,
+    );
+  });
+
+  app.get<{
+    Params: { assignmentId: string };
+  }>(
+    "/api/echo/assignments/:assignmentId",
+    async (request) => {
+      const session = await sessionFromRequest(request);
+      if (!session?.accountAuthenticated) {
+        throw new AppError(
+          "ACCOUNT_REQUIRED",
+          "请先登录已验证的账号，再继续查看档案。",
+          401,
+        );
+      }
+      await authService.assertAccountCapability(session.userId, "MATCH");
+      if (
+        !echoArchiveService ||
+        !UUID_PATTERN.test(request.params.assignmentId)
+      ) {
+        throw new AppError(
+          "ECHO_ASSIGNMENT_UNAVAILABLE",
+          "这份档案已经过期或不可用，请领取新的档案。",
+          409,
+        );
+      }
+      await consumeGameRateLimit("echo.assignment", session);
+      return echoArchiveService.getAssignment(
+        request.params.assignmentId,
+        session.databaseUserId ?? session.userId,
+      );
+    },
+  );
+
+  app.post<{
+    Params: { assignmentId: string };
+    Body: unknown;
+  }>(
+    "/api/echo/assignments/:assignmentId/judgment",
+    async (request) => {
+      const session = await sessionFromRequest(request);
+      if (!session?.accountAuthenticated) {
+        throw new AppError(
+          "ACCOUNT_REQUIRED",
+          "请先登录已验证的账号，再提交身份判读。",
+          401,
+        );
+      }
+      requireCsrf(request, session);
+      await authService.assertAccountCapability(session.userId, "MATCH");
+      if (
+        !echoArchiveService ||
+        !UUID_PATTERN.test(request.params.assignmentId)
+      ) {
+        throw new AppError(
+          "ECHO_ASSIGNMENT_UNAVAILABLE",
+          "这份档案已经结束或不可用，请领取新的档案。",
+          409,
+        );
+      }
+      const parsed = submitEchoJudgmentRequestSchema.safeParse(request.body);
+      if (!parsed.success) {
+        throw new AppError(
+          "INVALID_ECHO_JUDGMENT",
+          "请分别判断匿名玩家 A、B 的身份并填写置信度。",
+          400,
+        );
+      }
+      await consumeGameRateLimit("echo.judgment", session);
+      return echoArchiveService.submitJudgment(
+        request.params.assignmentId,
+        session.databaseUserId ?? session.userId,
+        parsed.data,
+      );
+    },
+  );
+
+  app.get("/api/echo/records", async (request) => {
+    const session = await sessionFromRequest(request);
+    if (!session?.accountAuthenticated) {
+      throw new AppError(
+        "ACCOUNT_REQUIRED",
+        "请先登录已验证的账号，再查看回声鉴证战绩。",
+        401,
+      );
+    }
+    await authService.assertAccountCapability(session.userId, "MATCH");
+    if (!echoArchiveService) {
+      throw new AppError(
+        "ECHO_RECORDS_UNAVAILABLE",
+        "回声战绩暂时没有成功抵达，请稍后重试。",
+        503,
+      );
+    }
+    await consumeGameRateLimit("echo.record.read", session);
+    return echoArchiveService.getReviewerRecords(
+      session.databaseUserId ?? session.userId,
+    );
+  });
+
+  app.get<{
+    Params: { assignmentId: string };
+  }>(
+    "/api/echo/assignments/:assignmentId/comments",
+    async (request) => {
+      const session = await sessionFromRequest(request);
+      if (!session?.accountAuthenticated) {
+        throw new AppError(
+          "ACCOUNT_REQUIRED",
+          "请先登录已验证的账号，再查看回声批注。",
+          401,
+        );
+      }
+      await authService.assertAccountCapability(session.userId, "MATCH");
+      if (
+        !echoArchiveService ||
+        !UUID_PATTERN.test(request.params.assignmentId)
+      ) {
+        throw new AppError(
+          "ECHO_COMMENTS_LOCKED",
+          "完成身份判断后，才可以查看和参与回声批注。",
+          403,
+        );
+      }
+      await consumeGameRateLimit("echo.comment.read", session);
+      return echoArchiveService.listComments(
+        request.params.assignmentId,
+        session.databaseUserId ?? session.userId,
+      );
+    },
+  );
+
+  app.post<{
+    Params: { assignmentId: string };
+    Body: unknown;
+  }>(
+    "/api/echo/assignments/:assignmentId/comments",
+    async (request) => {
+      const session = await sessionFromRequest(request);
+      if (!session?.accountAuthenticated) {
+        throw new AppError(
+          "ACCOUNT_REQUIRED",
+          "请先登录已验证的账号，再留下回声批注。",
+          401,
+        );
+      }
+      requireCsrf(request, session);
+      await authService.assertAccountCapability(session.userId, "MATCH");
+      if (
+        !echoArchiveService ||
+        !UUID_PATTERN.test(request.params.assignmentId)
+      ) {
+        throw new AppError(
+          "ECHO_COMMENTS_LOCKED",
+          "完成身份判断后，才可以查看和参与回声批注。",
+          403,
+        );
+      }
+      const parsed = submitEchoCommentRequestSchema.safeParse(request.body);
+      if (!parsed.success) {
+        throw new AppError(
+          "INVALID_ECHO_COMMENT",
+          "请选择一条消息并填写 2–200 字的批注。",
+          400,
+        );
+      }
+      await consumeGameRateLimit(
+        "echo.comment.write",
+        session,
+        request.params.assignmentId,
+      );
+      return echoArchiveService.createComment(
+        request.params.assignmentId,
+        session.databaseUserId ?? session.userId,
+        parsed.data,
+      );
+    },
+  );
+
+  app.put<{
+    Params: { assignmentId: string; commentId: string };
+  }>(
+    "/api/echo/assignments/:assignmentId/comments/:commentId/like",
+    async (request) => {
+      const session = await sessionFromRequest(request);
+      if (!session?.accountAuthenticated) {
+        throw new AppError(
+          "ACCOUNT_REQUIRED",
+          "请先登录已验证的账号，再为批注点赞。",
+          401,
+        );
+      }
+      requireCsrf(request, session);
+      await authService.assertAccountCapability(session.userId, "MATCH");
+      if (
+        !echoArchiveService ||
+        !UUID_PATTERN.test(request.params.assignmentId) ||
+        !UUID_PATTERN.test(request.params.commentId)
+      ) {
+        throw new AppError(
+          "ECHO_COMMENT_UNAVAILABLE",
+          "这条批注不存在或已经被删除。",
+          404,
+        );
+      }
+      await consumeGameRateLimit("echo.comment.like", session);
+      return echoArchiveService.setCommentLike(
+        request.params.assignmentId,
+        session.databaseUserId ?? session.userId,
+        request.params.commentId,
+        true,
+      );
+    },
+  );
+
+  app.delete<{
+    Params: { assignmentId: string; commentId: string };
+  }>(
+    "/api/echo/assignments/:assignmentId/comments/:commentId/like",
+    async (request) => {
+      const session = await sessionFromRequest(request);
+      if (!session?.accountAuthenticated) {
+        throw new AppError(
+          "ACCOUNT_REQUIRED",
+          "请先登录已验证的账号，再管理批注点赞。",
+          401,
+        );
+      }
+      requireCsrf(request, session);
+      await authService.assertAccountCapability(session.userId, "MATCH");
+      if (
+        !echoArchiveService ||
+        !UUID_PATTERN.test(request.params.assignmentId) ||
+        !UUID_PATTERN.test(request.params.commentId)
+      ) {
+        throw new AppError(
+          "ECHO_COMMENT_UNAVAILABLE",
+          "这条批注不存在或已经被删除。",
+          404,
+        );
+      }
+      await consumeGameRateLimit("echo.comment.like", session);
+      return echoArchiveService.setCommentLike(
+        request.params.assignmentId,
+        session.databaseUserId ?? session.userId,
+        request.params.commentId,
+        false,
+      );
+    },
+  );
+
+  app.delete<{
+    Params: { assignmentId: string; commentId: string };
+  }>(
+    "/api/echo/assignments/:assignmentId/comments/:commentId",
+    async (request) => {
+      const session = await sessionFromRequest(request);
+      if (!session?.accountAuthenticated) {
+        throw new AppError(
+          "ACCOUNT_REQUIRED",
+          "请先登录已验证的账号，再删除批注。",
+          401,
+        );
+      }
+      requireCsrf(request, session);
+      await authService.assertAccountCapability(session.userId, "MATCH");
+      if (
+        !echoArchiveService ||
+        !UUID_PATTERN.test(request.params.assignmentId) ||
+        !UUID_PATTERN.test(request.params.commentId)
+      ) {
+        throw new AppError(
+          "ECHO_COMMENT_DELETE_FORBIDDEN",
+          "只能删除自己在这份档案中留下的批注。",
+          403,
+        );
+      }
+      await consumeGameRateLimit(
+        "echo.comment.write",
+        session,
+        request.params.assignmentId,
+      );
+      return echoArchiveService.deleteComment(
+        request.params.assignmentId,
+        session.databaseUserId ?? session.userId,
+        request.params.commentId,
+      );
     },
   );
 
@@ -1679,6 +2054,10 @@ export async function buildServer(
     feedback: {
       configured: Boolean(feedbackDigestWorker),
       worker: feedbackDigestWorker,
+    },
+    echo: {
+      configured: Boolean(echoArchiveService),
+      service: echoArchiveService,
     },
   };
 }

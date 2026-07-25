@@ -22,6 +22,13 @@ export type RateLimitOperation =
   | "chat.typing"
   | "game.report"
   | "feedback.submit"
+  | "echo.consent"
+  | "echo.assignment"
+  | "echo.judgment"
+  | "echo.record.read"
+  | "echo.comment.read"
+  | "echo.comment.write"
+  | "echo.comment.like"
   | "ai.request"
   | "ws.handshake";
 

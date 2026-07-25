@@ -107,8 +107,8 @@ export const DEFAULT_RATE_LIMIT_POLICIES: RateLimitPolicies = {
   "chat.typing": {
     operation: "chat.typing",
     rules: [
-      { id: "session-10s", dimension: "session", limit: 10, windowMs: 10 * SECOND, required: true },
-      { id: "user-10s", dimension: "user", limit: 10, windowMs: 10 * SECOND, required: true },
+      { id: "session-10s", dimension: "session", limit: 15, windowMs: 10 * SECOND, required: true },
+      { id: "user-10s", dimension: "user", limit: 15, windowMs: 10 * SECOND, required: true },
       { id: "room-10s", dimension: "room", limit: 40, windowMs: 10 * SECOND, required: true },
       { id: "global-1m", dimension: "global", limit: 50_000, windowMs: MINUTE },
     ],
@@ -131,6 +131,70 @@ export const DEFAULT_RATE_LIMIT_POLICIES: RateLimitPolicies = {
       { id: "session-1d", dimension: "session", limit: 5, windowMs: DAY, required: true },
       { id: "ip-1d", dimension: "ip", limit: 20, windowMs: DAY, required: true },
       { id: "global-1d", dimension: "global", limit: 1_000, windowMs: DAY },
+    ],
+  },
+  "echo.consent": {
+    operation: "echo.consent",
+    rules: [
+      { id: "user-1h", dimension: "user", limit: 30, windowMs: HOUR, required: true },
+      { id: "session-1h", dimension: "session", limit: 30, windowMs: HOUR, required: true },
+      { id: "ip-1h", dimension: "ip", limit: 120, windowMs: HOUR, required: true },
+      { id: "global-1h", dimension: "global", limit: 10_000, windowMs: HOUR },
+    ],
+  },
+  "echo.assignment": {
+    operation: "echo.assignment",
+    rules: [
+      { id: "user-1h", dimension: "user", limit: 60, windowMs: HOUR, required: true },
+      { id: "device-1h", dimension: "device", limit: 60, windowMs: HOUR, required: true },
+      { id: "ip-1h", dimension: "ip", limit: 240, windowMs: HOUR, required: true },
+      { id: "global-1h", dimension: "global", limit: 20_000, windowMs: HOUR },
+    ],
+  },
+  "echo.judgment": {
+    operation: "echo.judgment",
+    rules: [
+      { id: "user-1h", dimension: "user", limit: 60, windowMs: HOUR, required: true },
+      { id: "session-1h", dimension: "session", limit: 60, windowMs: HOUR, required: true },
+      { id: "ip-1h", dimension: "ip", limit: 240, windowMs: HOUR, required: true },
+      { id: "global-1h", dimension: "global", limit: 20_000, windowMs: HOUR },
+    ],
+  },
+  "echo.record.read": {
+    operation: "echo.record.read",
+    rules: [
+      { id: "user-1h", dimension: "user", limit: 120, windowMs: HOUR, required: true },
+      { id: "session-1h", dimension: "session", limit: 120, windowMs: HOUR, required: true },
+      { id: "ip-1h", dimension: "ip", limit: 480, windowMs: HOUR, required: true },
+      { id: "global-1h", dimension: "global", limit: 40_000, windowMs: HOUR },
+    ],
+  },
+  "echo.comment.read": {
+    operation: "echo.comment.read",
+    rules: [
+      { id: "user-1h", dimension: "user", limit: 240, windowMs: HOUR, required: true },
+      { id: "session-1h", dimension: "session", limit: 240, windowMs: HOUR, required: true },
+      { id: "ip-1h", dimension: "ip", limit: 600, windowMs: HOUR, required: true },
+      { id: "global-1h", dimension: "global", limit: 50_000, windowMs: HOUR },
+    ],
+  },
+  "echo.comment.write": {
+    operation: "echo.comment.write",
+    rules: [
+      { id: "user-1h", dimension: "user", limit: 20, windowMs: HOUR, required: true },
+      { id: "session-1h", dimension: "session", limit: 20, windowMs: HOUR, required: true },
+      { id: "assignment-1h", dimension: "room", limit: 20, windowMs: HOUR, required: true },
+      { id: "ip-1h", dimension: "ip", limit: 80, windowMs: HOUR, required: true },
+      { id: "global-1h", dimension: "global", limit: 10_000, windowMs: HOUR },
+    ],
+  },
+  "echo.comment.like": {
+    operation: "echo.comment.like",
+    rules: [
+      { id: "user-1h", dimension: "user", limit: 120, windowMs: HOUR, required: true },
+      { id: "session-1h", dimension: "session", limit: 120, windowMs: HOUR, required: true },
+      { id: "ip-1h", dimension: "ip", limit: 480, windowMs: HOUR, required: true },
+      { id: "global-1h", dimension: "global", limit: 40_000, windowMs: HOUR },
     ],
   },
   "ai.request": {

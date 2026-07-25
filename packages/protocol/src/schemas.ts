@@ -105,6 +105,188 @@ export const feedbackCategorySchema = z.enum([
   "other",
 ]);
 
+export const archiveConsentDecisionSchema = z.enum([
+  "approve",
+  "decline",
+]);
+
+export const submitArchiveConsentRequestSchema = z
+  .object({
+    decision: archiveConsentDecisionSchema,
+    clientRequestId: z.string().uuid(),
+  })
+  .strict();
+
+export const archiveConsentResponseSchema = z
+  .object({
+    accepted: z.literal(true),
+    message: z.string().min(1).max(200),
+  })
+  .strict();
+
+export const echoReplayEventSchema = z
+  .object({
+    sequence: z.number().int().positive(),
+    type: z.enum([
+      "typing.start",
+      "typing.stop",
+      "message.visible",
+    ]),
+    actor: z.enum(["A", "B"]),
+    offsetMs: z.number().int().nonnegative(),
+    content: z.string().max(100).optional(),
+    moderated: z.boolean().optional(),
+  })
+  .strict();
+
+export const echoAssignmentResponseSchema = z
+  .object({
+    assignmentId: z.string().uuid(),
+    archiveId: z.string().uuid(),
+    status: z.literal("active"),
+    expiresInSeconds: z.number().int().nonnegative(),
+    durationMs: z.number().int().nonnegative(),
+    events: z.array(echoReplayEventSchema).max(500),
+  })
+  .strict();
+
+export const submitEchoJudgmentRequestSchema = z
+  .object({
+    guessA: identitySchema,
+    confidenceA: confidenceSchema,
+    guessB: identitySchema,
+    confidenceB: confidenceSchema,
+    clientRequestId: z.string().uuid(),
+  })
+  .strict();
+
+export const submitEchoJudgmentResponseSchema = z
+  .object({
+    completed: z.literal(true),
+    identities: z
+      .object({
+        A: identitySchema,
+        B: identitySchema,
+      })
+      .strict(),
+    correct: z
+      .object({
+        A: z.boolean(),
+        B: z.boolean(),
+      })
+      .strict(),
+    correctCount: z.number().int().min(0).max(2),
+    bothCorrect: z.boolean(),
+    scoreDelta: z.number().int(),
+    confidenceCalibration: z.number().int().min(0).max(100),
+    stats: z
+      .object({
+        reviewsPlayed: z.number().int().nonnegative(),
+        identitiesCorrect: z.number().int().nonnegative(),
+        perfectJudgments: z.number().int().nonnegative(),
+        score: z.number().int(),
+      })
+      .strict(),
+  })
+  .strict();
+
+export const echoRecordEntrySchema = z
+  .object({
+    id: z.string().uuid(),
+    submittedAt: z.string().datetime(),
+    identities: z
+      .object({
+        A: identitySchema,
+        B: identitySchema,
+      })
+      .strict(),
+    guesses: z
+      .object({
+        A: identitySchema,
+        B: identitySchema,
+      })
+      .strict(),
+    confidence: z
+      .object({
+        A: confidenceSchema,
+        B: confidenceSchema,
+      })
+      .strict(),
+    correct: z
+      .object({
+        A: z.boolean(),
+        B: z.boolean(),
+      })
+      .strict(),
+    correctCount: z.number().int().min(0).max(2),
+    bothCorrect: z.boolean(),
+    scoreDelta: z.number().int(),
+    confidenceCalibration: z.number().int().min(0).max(100),
+    durationMs: z.number().int().nonnegative(),
+    messageCount: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export const echoRecordsResponseSchema = z
+  .object({
+    stats: z
+      .object({
+        reviewsPlayed: z.number().int().nonnegative(),
+        identitiesCorrect: z.number().int().nonnegative(),
+        perfectJudgments: z.number().int().nonnegative(),
+        score: z.number().int(),
+      })
+      .strict(),
+    records: z.array(echoRecordEntrySchema).max(50),
+  })
+  .strict();
+
+export const echoCommentSchema = z
+  .object({
+    id: z.string().uuid(),
+    eventSequence: z.number().int().positive(),
+    authorAlias: z.string().min(1).max(40),
+    content: z.string().min(2).max(200),
+    createdAt: z.string().datetime(),
+    likeCount: z.number().int().nonnegative(),
+    likedByMe: z.boolean(),
+    mine: z.boolean(),
+  })
+  .strict();
+
+export const echoCommentsResponseSchema = z
+  .object({
+    comments: z.array(echoCommentSchema).max(500),
+    countsByEventSequence: z.record(
+      z.string().regex(/^[1-9]\d*$/u),
+      z.number().int().nonnegative(),
+    ),
+  })
+  .strict();
+
+export const submitEchoCommentRequestSchema = z
+  .object({
+    eventSequence: z.number().int().positive(),
+    content: z.string().trim().min(2).max(200),
+    clientRequestId: z.string().uuid(),
+  })
+  .strict();
+
+export const echoCommentLikeResponseSchema = z
+  .object({
+    commentId: z.string().uuid(),
+    liked: z.boolean(),
+    likeCount: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export const deleteEchoCommentResponseSchema = z
+  .object({
+    commentId: z.string().uuid(),
+    deleted: z.literal(true),
+  })
+  .strict();
+
 export const submitFeedbackRequestSchema = z
   .object({
     category: feedbackCategorySchema,
@@ -225,6 +407,7 @@ export const serverEventSchema = z.discriminatedUnion("type", [
     guess: identitySchema.nullable(),
     isCorrect: z.boolean(),
     outcome: z.string(),
+    archiveConsentEligible: z.boolean(),
     stats: gameStatsSchema.optional(),
   }),
   z.object({
@@ -292,6 +475,40 @@ export type ResetPasswordResponse = z.infer<
 export type LogoutRequest = z.infer<typeof logoutRequestSchema>;
 export type LogoutResponse = z.infer<typeof logoutResponseSchema>;
 export type FeedbackCategory = z.infer<typeof feedbackCategorySchema>;
+export type ArchiveConsentDecision = z.infer<
+  typeof archiveConsentDecisionSchema
+>;
+export type SubmitArchiveConsentRequest = z.infer<
+  typeof submitArchiveConsentRequestSchema
+>;
+export type ArchiveConsentResponse = z.infer<
+  typeof archiveConsentResponseSchema
+>;
+export type EchoReplayEvent = z.infer<typeof echoReplayEventSchema>;
+export type EchoAssignmentResponse = z.infer<
+  typeof echoAssignmentResponseSchema
+>;
+export type SubmitEchoJudgmentRequest = z.infer<
+  typeof submitEchoJudgmentRequestSchema
+>;
+export type SubmitEchoJudgmentResponse = z.infer<
+  typeof submitEchoJudgmentResponseSchema
+>;
+export type EchoRecordEntry = z.infer<typeof echoRecordEntrySchema>;
+export type EchoRecordsResponse = z.infer<typeof echoRecordsResponseSchema>;
+export type EchoComment = z.infer<typeof echoCommentSchema>;
+export type EchoCommentsResponse = z.infer<
+  typeof echoCommentsResponseSchema
+>;
+export type SubmitEchoCommentRequest = z.infer<
+  typeof submitEchoCommentRequestSchema
+>;
+export type EchoCommentLikeResponse = z.infer<
+  typeof echoCommentLikeResponseSchema
+>;
+export type DeleteEchoCommentResponse = z.infer<
+  typeof deleteEchoCommentResponseSchema
+>;
 export type SubmitFeedbackRequest = z.infer<
   typeof submitFeedbackRequestSchema
 >;

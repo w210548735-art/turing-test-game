@@ -16,6 +16,7 @@ export type ModerationCategory =
 
 export type ModerationSurface =
   | "CHAT"
+  | "ECHO_COMMENT"
   | "PROFILE"
   | "AI_OUTPUT"
   | "REPORT_REASON";

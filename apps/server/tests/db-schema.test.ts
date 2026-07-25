@@ -7,12 +7,24 @@ import {
   bans,
   deviceAccounts,
   devices,
+  echoArchiveEvents,
+  echoArchives,
+  echoArchiveSources,
+  echoAssignments,
+  echoCommentAuthors,
+  echoCommentLikes,
+  echoComments,
+  echoConsents,
+  echoIdentityPatternEnum,
+  echoJudgments,
+  echoReviewerStats,
   feedback,
   feedbackCategoryEnum,
   feedbackDigestRuns,
   feedbackDigestStatusEnum,
   feedbackDeliveryStatusEnum,
   gameParticipants,
+  gameTimelineEvents,
   games,
   guesses,
   messages,
@@ -44,6 +56,17 @@ const allTables = [
   bans,
   feedback,
   feedbackDigestRuns,
+  gameTimelineEvents,
+  echoArchives,
+  echoConsents,
+  echoArchiveSources,
+  echoArchiveEvents,
+  echoAssignments,
+  echoJudgments,
+  echoReviewerStats,
+  echoCommentAuthors,
+  echoComments,
+  echoCommentLikes,
 ];
 
 describe("数据库结构", () => {
@@ -67,7 +90,81 @@ describe("数据库结构", () => {
         "bans",
         "feedback",
         "feedback_digest_runs",
+        "game_timeline_events",
+        "echo_archives",
+        "echo_consents",
+        "echo_archive_sources",
+        "echo_archive_events",
+        "echo_assignments",
+        "echo_judgments",
+        "echo_reviewer_stats",
+        "echo_comment_authors",
+        "echo_comments",
+        "echo_comment_likes",
       ],
+    );
+  });
+
+  it("回声批注迁移保留匿名作者并让评论和点赞随档案删除", async () => {
+    const migrationUrl = new URL(
+      "../drizzle/0006_echo_comments.sql",
+      import.meta.url,
+    );
+    const migration = await readFile(migrationUrl, "utf8");
+    for (const table of [
+      "echo_comment_authors",
+      "echo_comments",
+      "echo_comment_likes",
+    ]) {
+      assert.match(migration, new RegExp(`CREATE TABLE "${table}"`));
+    }
+    assert.match(
+      migration,
+      /echo_comment_authors_reviewer_user_id_users_id_fk[\s\S]*ON DELETE set null/,
+    );
+    assert.match(
+      migration,
+      /echo_comments_author_assignment_id_echo_assignments_id_fk[\s\S]*ON DELETE set null/,
+    );
+    assert.match(migration, /echo_comments_content_length/);
+    assert.match(migration, /echo_comment_likes_pk/);
+    assert.doesNotMatch(migration, /source_game_id|source_user_id/);
+  });
+
+  it("回声档案迁移物化匿名时间轴并允许原始游戏按期删除", async () => {
+    assert.deepEqual(echoIdentityPatternEnum.enumValues, [
+      "human_human",
+      "human_ai",
+      "ai_ai",
+    ]);
+    const archiveColumns = getTableColumns(echoArchives);
+    assert.equal(archiveColumns.sourceGameId.notNull, false);
+    const migrationUrl = new URL(
+      "../drizzle/0005_echo_archives.sql",
+      import.meta.url,
+    );
+    const migration = await readFile(migrationUrl, "utf8");
+    for (const table of [
+      "game_timeline_events",
+      "echo_archives",
+      "echo_consents",
+      "echo_archive_sources",
+      "echo_archive_events",
+      "echo_assignments",
+      "echo_judgments",
+      "echo_reviewer_stats",
+    ]) {
+      assert.match(migration, new RegExp(`CREATE TABLE "${table}"`));
+    }
+    assert.match(
+      migration,
+      /echo_archives_source_game_id_games_id_fk[\s\S]*ON DELETE set null/,
+    );
+    assert.match(migration, /echo_judgments_calibration_range/);
+    assert.match(migration, /'ai_ai'/);
+    assert.doesNotMatch(
+      migration,
+      /"source_game_id" uuid NOT NULL/,
     );
   });
 

@@ -475,6 +475,7 @@ export class DemoTransport implements GameTransport {
             guess: event.targetGuess,
             isCorrect,
             outcome: isCorrect ? "won" : "lost",
+            archiveConsentEligible: false,
             stats: {
               durationSeconds: 20,
               messageCount: this.sequence,

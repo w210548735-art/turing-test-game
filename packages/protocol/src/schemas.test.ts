@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   accountSessionResponseSchema,
   accountStatusSchema,
+  archiveConsentResponseSchema,
   clientEventSchema,
+  echoAssignmentResponseSchema,
+  echoCommentLikeResponseSchema,
+  echoCommentsResponseSchema,
+  echoRecordsResponseSchema,
   emailSchema,
   forgotPasswordRequestSchema,
   forgotPasswordResponseSchema,
@@ -18,6 +23,10 @@ import {
   serverEventSchema,
   submitFeedbackRequestSchema,
   submitFeedbackResponseSchema,
+  submitArchiveConsentRequestSchema,
+  submitEchoJudgmentRequestSchema,
+  submitEchoJudgmentResponseSchema,
+  submitEchoCommentRequestSchema,
   verifyEmailRequestSchema,
   verifyEmailResponseSchema,
 } from "./schemas.js";
@@ -54,8 +63,164 @@ describe("共享协议", () => {
         guess: "ai",
         isCorrect: true,
         outcome: "won",
+        archiveConsentEligible: true,
       }).success,
     ).toBe(true);
+  });
+
+  it("严格校验回声档案同意、回放与判断契约", () => {
+    const requestId = "7febf16e-48ef-4ef4-8422-edb227b6b7fe";
+    expect(
+      submitArchiveConsentRequestSchema.safeParse({
+        decision: "approve",
+        clientRequestId: requestId,
+      }).success,
+    ).toBe(true);
+    expect(
+      archiveConsentResponseSchema.safeParse({
+        accepted: true,
+        message: "你的选择已经记录。",
+      }).success,
+    ).toBe(true);
+    expect(
+      echoAssignmentResponseSchema.safeParse({
+        assignmentId: requestId,
+        archiveId: "afc6af5b-98ac-4ca5-9438-2fad3e0443ca",
+        status: "active",
+        expiresInSeconds: 600,
+        durationMs: 30_000,
+        events: [
+          {
+            sequence: 1,
+            type: "typing.start",
+            actor: "A",
+            offsetMs: 1_000,
+          },
+          {
+            sequence: 2,
+            type: "message.visible",
+            actor: "A",
+            offsetMs: 4_000,
+            content: "你好",
+            moderated: false,
+          },
+        ],
+      }).success,
+    ).toBe(true);
+    expect(
+      submitEchoJudgmentRequestSchema.safeParse({
+        guessA: "human",
+        confidenceA: 80,
+        guessB: "ai",
+        confidenceB: 90,
+        clientRequestId: requestId,
+      }).success,
+    ).toBe(true);
+    expect(
+      submitEchoJudgmentResponseSchema.safeParse({
+        completed: true,
+        identities: { A: "human", B: "ai" },
+        correct: { A: true, B: true },
+        correctCount: 2,
+        bothCorrect: true,
+        scoreDelta: 10,
+        confidenceCalibration: 85,
+        stats: {
+          reviewsPlayed: 1,
+          identitiesCorrect: 2,
+          perfectJudgments: 1,
+          score: 10,
+        },
+      }).success,
+    ).toBe(true);
+  });
+
+  it("严格校验回声批注的公开锚点、长度和匿名响应", () => {
+    const commentId = "177e9b97-f8a9-42ea-9560-518f1f39ffcf";
+    expect(
+      submitEchoCommentRequestSchema.safeParse({
+        eventSequence: 2,
+        content: "  这句话很像真人的临场反应。  ",
+        clientRequestId: "7febf16e-48ef-4ef4-8422-edb227b6b7fe",
+      }).success,
+    ).toBe(true);
+    expect(
+      submitEchoCommentRequestSchema.safeParse({
+        eventSequence: 2,
+        content: "只",
+        clientRequestId: "7febf16e-48ef-4ef4-8422-edb227b6b7fe",
+      }).success,
+    ).toBe(false);
+    expect(
+      echoCommentsResponseSchema.safeParse({
+        comments: [
+          {
+            id: commentId,
+            eventSequence: 2,
+            authorAlias: "鉴证官 7K2",
+            content: "这句话很像真人的临场反应。",
+            createdAt: "2026-07-25T02:00:00.000Z",
+            likeCount: 3,
+            likedByMe: true,
+            mine: false,
+          },
+        ],
+        countsByEventSequence: { "2": 1 },
+      }).success,
+    ).toBe(true);
+    expect(
+      echoCommentsResponseSchema.safeParse({
+        comments: [],
+        countsByEventSequence: {},
+        reviewerUserId: "7febf16e-48ef-4ef4-8422-edb227b6b7fe",
+      }).success,
+    ).toBe(false);
+    expect(
+      echoCommentLikeResponseSchema.safeParse({
+        commentId,
+        liked: true,
+        likeCount: 4,
+      }).success,
+    ).toBe(true);
+  });
+
+  it("严格校验回声鉴证战绩并拒绝内部关联字段", () => {
+    const response = {
+      stats: {
+        reviewsPlayed: 3,
+        identitiesCorrect: 4,
+        perfectJudgments: 1,
+        score: 18,
+      },
+      records: [
+        {
+          id: "177e9b97-f8a9-42ea-9560-518f1f39ffcf",
+          submittedAt: "2026-07-25T02:00:00.000Z",
+          identities: { A: "human", B: "ai" },
+          guesses: { A: "human", B: "human" },
+          confidence: { A: 82, B: 61 },
+          correct: { A: true, B: false },
+          correctCount: 1,
+          bothCorrect: false,
+          scoreDelta: 4,
+          confidenceCalibration: 61,
+          durationMs: 42_000,
+          messageCount: 8,
+        },
+      ],
+    };
+    expect(echoRecordsResponseSchema.safeParse(response).success).toBe(true);
+    expect(
+      echoRecordsResponseSchema.safeParse({
+        ...response,
+        records: [
+          {
+            ...response.records[0],
+            archiveId: "afc6af5b-98ac-4ca5-9438-2fad3e0443ca",
+          },
+        ],
+      }).success,
+    ).toBe(false);
   });
 
   it("区分容量排队、寻找对手和五秒入场事件", () => {

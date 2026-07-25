@@ -47,7 +47,7 @@ export interface Participant {
   messageCount: number;
   connected: boolean;
   disconnectTimer?: NodeJS.Timeout;
-  lastTypingAt: number;
+  typingActive: boolean;
   typingExpiry?: NodeJS.Timeout;
 }
 
@@ -59,6 +59,8 @@ export interface Room {
   createdAt: number;
   expiresAt: number;
   messages: ChatMessage[];
+  timelineSequence: number;
+  hadDisconnect: boolean;
   aiAbort?: AbortController;
   aiDelayTimer?: NodeJS.Timeout;
   expiryTimer?: NodeJS.Timeout;
@@ -66,6 +68,8 @@ export interface Room {
   aiDatabaseParticipantId?: string;
   persistenceChain?: Promise<void>;
   persistenceFailed?: boolean;
+  echoPersistenceChain?: Promise<void>;
+  echoPersistenceFailed?: boolean;
 }
 
 export interface SettlementView {

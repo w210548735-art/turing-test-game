@@ -157,6 +157,13 @@ describe("默认策略", () => {
       "chat.typing",
       "game.report",
       "feedback.submit",
+      "echo.consent",
+      "echo.assignment",
+      "echo.judgment",
+      "echo.record.read",
+      "echo.comment.read",
+      "echo.comment.write",
+      "echo.comment.like",
       "ai.request",
       "ws.handshake",
     ]) {
@@ -182,6 +189,21 @@ describe("默认策略", () => {
         "user_ip",
       ],
     );
+
+    const typingPolicy =
+      DEFAULT_RATE_LIMIT_POLICIES["chat.typing"];
+    assert.ok(typingPolicy, "缺少输入状态限流策略");
+    const typingRules = typingPolicy.rules;
+    for (const dimension of ["session", "user"] as const) {
+      const rule = typingRules.find(
+        (candidate) => candidate.dimension === dimension,
+      );
+      assert.ok(rule, `缺少输入心跳 ${dimension} 限流`);
+      assert.ok(
+        rule.limit >= 12,
+        "1 秒心跳加开始/停止事件不应在连续输入 10 秒内误伤",
+      );
+    }
   });
 });
 

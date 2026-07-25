@@ -8,6 +8,7 @@ import {
 import type { AppDatabase } from "./client.js";
 import {
   bans,
+  gameTimelineEvents,
   messages,
   moderationEvents,
   reports,
@@ -16,6 +17,7 @@ import {
 const DAY_MS = 24 * 60 * 60_000;
 
 export interface RetentionResult {
+  timelineEventsDeleted: number;
   messagesDeleted: number;
   reportsDeleted: number;
   moderationEventsDeleted: number;
@@ -37,11 +39,16 @@ export async function runRetentionJobs(
   );
 
   const [
+    deletedTimelineEvents,
     deletedMessages,
     deletedReports,
     deletedModerationEvents,
     deletedBans,
   ] = await database.transaction(async (transaction) => {
+    const removedTimelineEvents = await transaction
+      .delete(gameTimelineEvents)
+      .where(lt(gameTimelineEvents.occurredAt, sevenDaysAgo))
+      .returning({ id: gameTimelineEvents.id });
     const removedMessages = await transaction
       .delete(messages)
       .where(lt(messages.createdAt, sevenDaysAgo))
@@ -71,6 +78,7 @@ export async function runRetentionJobs(
       )
       .returning({ id: bans.id });
     return [
+      removedTimelineEvents,
       removedMessages,
       removedReports,
       removedModerationEvents,
@@ -79,6 +87,7 @@ export async function runRetentionJobs(
   });
 
   return {
+    timelineEventsDeleted: deletedTimelineEvents.length,
     messagesDeleted: deletedMessages.length,
     reportsDeleted: deletedReports.length,
     moderationEventsDeleted: deletedModerationEvents.length,

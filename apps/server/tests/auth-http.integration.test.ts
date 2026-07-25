@@ -415,4 +415,167 @@ describe("账户认证 HTTP 路由", () => {
     });
     assert.equal(anonymous.statusCode, 401);
   });
+
+  it("回声档案接口要求账户、Origin 与写请求 CSRF", async () => {
+    const anonymous = await context.app.inject({
+      method: "POST",
+      url: "/api/echo/assignments",
+      headers: { origin: TEST_ORIGIN },
+    });
+    assert.equal(anonymous.statusCode, 401);
+
+    const email = "echo-route@example.com";
+    const password = "Quartz-Nebula-Password-2026!";
+    const registration = await context.app.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      headers: { origin: TEST_ORIGIN },
+      payload: { email, password },
+    });
+    assert.equal(registration.statusCode, 202);
+    const verification = await context.app.inject({
+      method: "POST",
+      url: "/api/auth/verify-email",
+      headers: { origin: TEST_ORIGIN },
+      payload: {
+        token: outbox.latest("EMAIL_VERIFICATION").token,
+      },
+    });
+    assert.equal(verification.statusCode, 200);
+    const login = await context.app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      headers: { origin: TEST_ORIGIN },
+      payload: { email, password },
+    });
+    assert.equal(login.statusCode, 200);
+    const body = login.json<{ csrfToken: string }>();
+    const cookies = cookieHeader(login.headers["set-cookie"]);
+
+    const missingCsrf = await context.app.inject({
+      method: "POST",
+      url: "/api/echo/assignments",
+      headers: {
+        origin: TEST_ORIGIN,
+        cookie: cookies,
+      },
+    });
+    assert.equal(missingCsrf.statusCode, 403);
+
+    const unavailable = await context.app.inject({
+      method: "POST",
+      url: "/api/echo/assignments",
+      headers: {
+        origin: TEST_ORIGIN,
+        cookie: cookies,
+        "x-csrf-token": body.csrfToken,
+      },
+    });
+    assert.equal(unavailable.statusCode, 404);
+    assert.equal(
+      unavailable.json<{ error: { code: string } }>().error.code,
+      "ECHO_ARCHIVE_UNAVAILABLE",
+    );
+
+    const missingOrigin = await context.app.inject({
+      method: "PUT",
+      url: "/api/games/00000000-0000-4000-8000-000000000001/archive-consent",
+      headers: {
+        cookie: cookies,
+        "x-csrf-token": body.csrfToken,
+      },
+      payload: {
+        decision: "approve",
+        clientRequestId: "00000000-0000-4000-8000-000000000002",
+      },
+    });
+    assert.equal(missingOrigin.statusCode, 403);
+
+    const missingJudgmentCsrf = await context.app.inject({
+      method: "POST",
+      url: "/api/echo/assignments/00000000-0000-4000-8000-000000000003/judgment",
+      headers: {
+        origin: TEST_ORIGIN,
+        cookie: cookies,
+      },
+      payload: {
+        guessA: "human",
+        confidenceA: 50,
+        guessB: "ai",
+        confidenceB: 50,
+        clientRequestId: "00000000-0000-4000-8000-000000000004",
+      },
+    });
+    assert.equal(missingJudgmentCsrf.statusCode, 403);
+
+    const commentsWithoutOrigin = await context.app.inject({
+      method: "GET",
+      url: "/api/echo/assignments/00000000-0000-4000-8000-000000000003/comments",
+      headers: { cookie: cookies },
+    });
+    assert.equal(commentsWithoutOrigin.statusCode, 403);
+
+    const recordsFromForbiddenOrigin = await context.app.inject({
+      method: "GET",
+      url: "/api/echo/records",
+      headers: {
+        origin: "https://attacker.example",
+        cookie: cookies,
+      },
+    });
+    assert.equal(recordsFromForbiddenOrigin.statusCode, 403);
+
+    const recordsWithoutDatabase = await context.app.inject({
+      method: "GET",
+      url: "/api/echo/records",
+      headers: {
+        origin: TEST_ORIGIN,
+        cookie: cookies,
+      },
+    });
+    assert.equal(recordsWithoutDatabase.statusCode, 503);
+    assert.equal(
+      recordsWithoutDatabase.json<{ error: { code: string } }>().error.code,
+      "ECHO_RECORDS_UNAVAILABLE",
+    );
+
+    const commentsLocked = await context.app.inject({
+      method: "GET",
+      url: "/api/echo/assignments/00000000-0000-4000-8000-000000000003/comments",
+      headers: {
+        origin: TEST_ORIGIN,
+        cookie: cookies,
+      },
+    });
+    assert.equal(commentsLocked.statusCode, 403);
+    assert.equal(
+      commentsLocked.json<{ error: { code: string } }>().error.code,
+      "ECHO_COMMENTS_LOCKED",
+    );
+
+    const commentWithoutCsrf = await context.app.inject({
+      method: "POST",
+      url: "/api/echo/assignments/00000000-0000-4000-8000-000000000003/comments",
+      headers: {
+        origin: TEST_ORIGIN,
+        cookie: cookies,
+      },
+      payload: {
+        eventSequence: 2,
+        content: "这是一条不会被提交的测试批注",
+        clientRequestId: "00000000-0000-4000-8000-000000000005",
+      },
+    });
+    assert.equal(commentWithoutCsrf.statusCode, 403);
+
+    const likeWithoutCsrf = await context.app.inject({
+      method: "PUT",
+      url: "/api/echo/assignments/00000000-0000-4000-8000-000000000003/comments/00000000-0000-4000-8000-000000000006/like",
+      headers: {
+        origin: TEST_ORIGIN,
+        cookie: cookies,
+      },
+    });
+    assert.equal(likeWithoutCsrf.statusCode, 403);
+  });
 });
