@@ -71,7 +71,7 @@ describe("FeedbackDigestWorker", () => {
     });
     const worker = new FeedbackDigestWorker({
       repository,
-      recipientEmail: "redacted@example.com",
+      recipientEmail: "owner@example.com",
       now: () => new Date("2026-07-25T02:00:01.000Z"),
       leaseOwner: "cutoff-worker",
       delivery: {
@@ -107,7 +107,7 @@ describe("FeedbackDigestWorker", () => {
     let attempt = 0;
     const worker = new FeedbackDigestWorker({
       repository,
-      recipientEmail: "redacted@example.com",
+      recipientEmail: "owner@example.com",
       leaseOwner: "retry-worker",
       now: () => now,
       delivery: {
@@ -150,7 +150,7 @@ describe("FeedbackDigestWorker", () => {
     const messages: FeedbackDigestEmailMessage[] = [];
     const workerOptions = {
       repository,
-      recipientEmail: "redacted@example.com",
+      recipientEmail: "owner@example.com",
       now: () => new Date("2026-07-25T02:00:01.000Z"),
       delivery: {
         async sendFeedbackDigest(message: FeedbackDigestEmailMessage) {
@@ -194,7 +194,7 @@ describe("FeedbackDigestWorker", () => {
     const messages: FeedbackDigestEmailMessage[] = [];
     const worker = new FeedbackDigestWorker({
       repository,
-      recipientEmail: "redacted@example.com",
+      recipientEmail: "owner@example.com",
       now: () => new Date("2026-07-25T02:01:02.000Z"),
       leaseOwner: "replacement-instance",
       delivery: {

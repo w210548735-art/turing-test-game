@@ -30,6 +30,9 @@ jobs:
       - name: Install locked dependencies
         run: npm ci
 
+      - name: Public repository privacy scan
+        run: node tools/check-public-repo.mjs
+
       - name: Typecheck
         run: npm run typecheck
 

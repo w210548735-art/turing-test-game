@@ -52,7 +52,7 @@ describe("QQ SMTP 邮件投递", () => {
     const transport = new RecordingTransport();
     const delivery = new QqSmtpEmailDelivery(
       {
-        user: "redacted@example.com",
+        user: "sender@example.com",
         authCode: "transport-secret",
         fromName: "图灵测试",
         publicBaseUrl: "https://game.example.com",
@@ -74,7 +74,7 @@ describe("QQ SMTP 邮件投递", () => {
       expiresAt: new Date("2026-07-24T00:30:00.000Z"),
     });
     await delivery.sendFeedbackDigest({
-      to: "redacted@example.com",
+      to: "owner@example.com",
       digest: {
         id: "637cd34d-06c9-4614-8f57-804dc34552c6",
         cutoffAt: new Date("2026-07-25T02:00:00.000Z"),
@@ -148,7 +148,7 @@ describe("QQ SMTP 邮件投递", () => {
     );
     await assert.rejects(
       loadQqSmtpConfig({
-        QQ_SMTP_USER: "redacted@example.com",
+        QQ_SMTP_USER: "sender@example.com",
         QQ_SMTP_AUTH_CODE: "test-auth-code",
         PUBLIC_WEB_URL: "http://game.example.com",
         NODE_ENV: "production",

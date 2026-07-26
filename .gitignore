@@ -4,6 +4,13 @@ dist/
 coverage/
 *.log
 .deploy-temp/
+.private-backups/
+references/
+DEVELOPMENT.private.md
+docs/*.private.md
+*.bundle
+*.dump
+*.tar.gz
 .env
 .env.*
 !.env.example

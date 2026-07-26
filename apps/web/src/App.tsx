@@ -1478,7 +1478,7 @@ function AccountAccess({
                   value={email}
                   autoComplete="email"
                   inputMode="email"
-                  placeholder="redacted@example.com"
+                  placeholder="name@example.com"
                   onChange={(event) => setEmail(event.target.value)}
                 />
               </label>
