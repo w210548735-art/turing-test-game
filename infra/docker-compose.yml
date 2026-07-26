@@ -13,6 +13,7 @@ services:
       WEB_ORIGIN: ${WEB_ORIGIN:-${SITE_ADDRESS:-http://localhost}}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-${SITE_ADDRESS:-http://localhost}}
       PUBLIC_WEB_URL: ${PUBLIC_WEB_URL:-${SITE_ADDRESS:-http://localhost}}
+      TRUST_PROXY: ${TRUST_PROXY:-loopback, linklocal, uniquelocal}
       DEEPSEEK_API_KEY_FILE: /run/secrets/deepseek_api_key
       QQ_SMTP_USER: ${QQ_SMTP_USER:?set QQ_SMTP_USER}
       QQ_SMTP_FROM_NAME: ${QQ_SMTP_FROM_NAME:-图灵测试}

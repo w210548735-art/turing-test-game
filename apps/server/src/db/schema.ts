@@ -23,6 +23,7 @@ export const userStatusEnum = pgEnum("user_status", [
   "banned",
   "deleted",
 ]);
+export const accountRoleEnum = pgEnum("account_role", ["player", "root"]);
 export const verificationTokenPurposeEnum = pgEnum(
   "verification_token_purpose",
   ["verify_email", "reset_password", "change_email", "websocket_ticket"],
@@ -133,6 +134,7 @@ export const users = pgTable(
     nickname: text("nickname").notNull(),
     typingStatus: text("typing_status").notNull(),
     status: userStatusEnum("status").notNull().default("active"),
+    role: accountRoleEnum("role").notNull().default("player"),
     score: integer("score").notNull().default(0),
     gamesPlayed: integer("games_played").notNull().default(0),
     correctGuesses: integer("correct_guesses").notNull().default(0),

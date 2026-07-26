@@ -187,6 +187,57 @@ describe("PostgresAuthRepository PostgreSQL 语义", () => {
     );
   });
 
+  it("Session 撤销不会被陈旧更新恢复，并发轮换只签发一个后继会话", async () => {
+    const user = await repository.createUser(
+      accountInput("session-race@example.com"),
+    );
+    let now = new Date("2026-07-24T02:00:00.000Z");
+    const sessions = new SessionService(
+      repository,
+      { idleTtlMs: 60_000, absoluteTtlMs: 3_600_000 },
+      () => now,
+    );
+
+    const revoked = await sessions.create(user.id);
+    const stale = await repository.findSessionByHash(
+      revoked.session.tokenHash,
+    );
+    assert.ok(stale);
+    assert.equal(await sessions.revoke(revoked.token), true);
+    now = new Date(now.getTime() + 1_000);
+    stale.lastSeenAt = now;
+    await repository.updateSession(stale);
+    assert.equal(
+      await repository.touchActiveSession(
+        revoked.session.tokenHash,
+        now,
+        new Date(now.getTime() + 60_000),
+      ),
+      undefined,
+    );
+    await assert.rejects(
+      () => sessions.authenticate(revoked.token),
+      (error: unknown) =>
+        error instanceof AuthError && error.code === "SESSION_REVOKED",
+    );
+
+    const rotating = await sessions.create(user.id);
+    const attempts = await Promise.allSettled([
+      sessions.rotate(rotating.token),
+      sessions.rotate(rotating.token),
+    ]);
+    assert.equal(
+      attempts.filter((attempt) => attempt.status === "fulfilled").length,
+      1,
+    );
+    const rejected = attempts.find(
+      (attempt): attempt is PromiseRejectedResult =>
+        attempt.status === "rejected",
+    );
+    assert.ok(rejected);
+    assert.equal((rejected.reason as AuthError).code, "SESSION_REVOKED");
+  });
+
   it("设备通过 device_accounts 正确持久化多个账号", async () => {
     const first = await repository.createUser(
       accountInput("device-one@example.com"),

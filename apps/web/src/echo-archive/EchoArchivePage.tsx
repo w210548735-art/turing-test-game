@@ -85,8 +85,8 @@ export function EchoArchivePage({
           </button>
         </div>
         <p>
-          沿服务器时间轴重看一段匿名对话，分别判断玩家 A 与 B：
-          真人，还是 AI。
+          沿服务器时间轴重听一段匿名对话。语言已经留下，
+          玩家 A 与 B 的身份仍未署名。
         </p>
       </header>
 
@@ -96,7 +96,7 @@ export function EchoArchivePage({
             02
           </div>
           <p className="eyebrow">CASE FILE / READY TO CLAIM</p>
-          <h2>听见过去，<br />判断此刻。</h2>
+          <h2>过去已经沉默，<br />证词还在。</h2>
           <p>
             每份档案均获得原对局双方授权，并经过匿名化与安全处理。
             回放结束后，你需要提交两份独立身份判断。
@@ -328,7 +328,7 @@ function EchoReplaySession({
       <aside className="echo-case-sidebar">
         <div>
           <p className="eyebrow">ACTIVE CASE / ANONYMOUS</p>
-          <h2>观察<br />回声，<br /><span>鉴定身份。</span></h2>
+          <h2>语言已经留下，<br /><span>身份仍未署名。</span></h2>
         </div>
         <dl>
           <div>
@@ -745,16 +745,16 @@ export function JudgmentResult({
     result.correctCount === 2
       ? {
           title: "双重命中",
-          summary: "两位匿名玩家的身份都被你准确识别。",
+          summary: "两道声音都没能藏过你的判断。",
         }
       : result.correctCount === 1
         ? {
             title: "命中一半",
-            summary: "你听懂了一道回声，另一道仍藏在噪声里。",
+            summary: "一道声音被你认出，另一道仍藏在回声里。",
           }
         : {
             title: "回声骗过了你",
-            summary: "这一次，两位匿名玩家都成功偏离了你的判断。",
+            summary: "这一次，语言替他们藏住了身份。",
           };
   const identityText = (identity: Identity) =>
     identity === "human" ? "真人" : "AI";

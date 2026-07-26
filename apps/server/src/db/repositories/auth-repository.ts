@@ -1,9 +1,18 @@
-import { and, eq, gt, isNull, notInArray, sql } from "drizzle-orm";
+import {
+  and,
+  eq,
+  gt,
+  isNull,
+  ne,
+  notInArray,
+  sql,
+} from "drizzle-orm";
 import { AuthError } from "../../auth/errors.js";
-import type {
-  AuthRepository,
-  CreateUserInput,
-  VerificationTokenConsumeResult,
+import {
+  buildAdminAccountMetrics,
+  type AuthRepository,
+  type CreateUserInput,
+  type VerificationTokenConsumeResult,
 } from "../../auth/repository.js";
 import type {
   AccountStatus,
@@ -88,6 +97,7 @@ function mapUser(row: UserRow): AuthUser | undefined {
     nickname: row.nickname,
     typingStatus: row.typingStatus,
     status: DATABASE_STATUS_TO_ACCOUNT[row.status],
+    role: row.role === "root" ? "ROOT" : "PLAYER",
     ...(row.emailVerifiedAt
       ? { emailVerifiedAt: cloneDate(row.emailVerifiedAt) }
       : {}),
@@ -178,6 +188,7 @@ export class PostgresAuthRepository implements AuthRepository {
           nickname: input.nickname ?? "新玩家",
           typingStatus: input.typingStatus ?? "",
           status: ACCOUNT_STATUS_TO_DATABASE[input.status],
+          role: input.role === "ROOT" ? "root" : "player",
           emailVerifiedAt: input.emailVerifiedAt,
           createdAt: now,
           updatedAt: now,
@@ -232,6 +243,7 @@ export class PostgresAuthRepository implements AuthRepository {
           nickname: user.nickname,
           typingStatus: user.typingStatus,
           status: ACCOUNT_STATUS_TO_DATABASE[user.status],
+          role: user.role === "ROOT" ? "root" : "player",
           emailVerifiedAt: user.emailVerifiedAt ?? null,
           deletedAt: user.status === "DELETED" ? user.updatedAt : null,
           updatedAt: user.updatedAt,
@@ -252,6 +264,21 @@ export class PostgresAuthRepository implements AuthRepository {
       }
       throw error;
     }
+  }
+
+  async getAdminAccountMetrics(now = new Date()) {
+    const [userRows, sessionRows] = await Promise.all([
+      this.database.select().from(users),
+      this.database.select().from(sessions),
+    ]);
+    return buildAdminAccountMetrics(
+      userRows.flatMap((row) => {
+        const user = mapUser(row);
+        return user ? [user] : [];
+      }),
+      sessionRows.map(mapSession),
+      now,
+    );
   }
 
   async saveVerificationToken(
@@ -386,13 +413,107 @@ export class PostgresAuthRepository implements AuthRepository {
         lastSeenAt: session.lastSeenAt,
         idleExpiresAt: session.idleExpiresAt,
         absoluteExpiresAt: session.absoluteExpiresAt,
-        revokedAt: session.revokedAt ?? null,
+        // 不允许常规会话资料更新把数据库中已撤销的状态覆盖回 null。
+        ...(session.revokedAt ? { revokedAt: session.revokedAt } : {}),
       })
       .where(eq(sessions.tokenHash, session.tokenHash))
       .returning({ id: sessions.id });
     if (rows.length === 0) {
       throw new Error("Session does not exist");
     }
+  }
+
+  async touchActiveSession(
+    tokenHash: string,
+    lastSeenAt: Date,
+    idleExpiresAt: Date,
+  ): Promise<SessionRecord | undefined> {
+    const [row] = await this.database
+      .update(sessions)
+      .set({ lastSeenAt, idleExpiresAt })
+      .where(
+        and(
+          eq(sessions.tokenHash, tokenHash),
+          isNull(sessions.revokedAt),
+          gt(sessions.idleExpiresAt, lastSeenAt),
+          gt(sessions.absoluteExpiresAt, lastSeenAt),
+        ),
+      )
+      .returning();
+    return row ? mapSession(row) : undefined;
+  }
+
+  async revokeSession(tokenHash: string, revokedAt: Date): Promise<boolean> {
+    const rows = await this.database
+      .update(sessions)
+      .set({ revokedAt })
+      .where(
+        and(
+          eq(sessions.tokenHash, tokenHash),
+          isNull(sessions.revokedAt),
+        ),
+      )
+      .returning({ id: sessions.id });
+    return rows.length === 1;
+  }
+
+  async revokeSessionsByUser(
+    userId: string,
+    revokedAt: Date,
+    exceptSessionId?: string,
+  ): Promise<number> {
+    const rows = await this.database
+      .update(sessions)
+      .set({ revokedAt })
+      .where(
+        and(
+          eq(sessions.userId, userId),
+          isNull(sessions.revokedAt),
+          exceptSessionId
+            ? ne(sessions.id, exceptSessionId)
+            : undefined,
+        ),
+      )
+      .returning({ id: sessions.id });
+    return rows.length;
+  }
+
+  async replaceActiveSession(
+    tokenHash: string,
+    replacement: SessionRecord,
+    revokedAt: Date,
+  ): Promise<boolean> {
+    return this.database.transaction(async (transaction) => {
+      const rows = await transaction
+        .update(sessions)
+        .set({ revokedAt })
+        .where(
+          and(
+            eq(sessions.tokenHash, tokenHash),
+            isNull(sessions.revokedAt),
+            gt(sessions.idleExpiresAt, revokedAt),
+            gt(sessions.absoluteExpiresAt, revokedAt),
+          ),
+        )
+        .returning({ id: sessions.id });
+      if (rows.length === 0) return false;
+
+      await transaction.insert(sessions).values({
+        id: replacement.id,
+        userId: replacement.userId,
+        deviceId: replacement.deviceId,
+        tokenHash: replacement.tokenHash,
+        csrfTokenHash: replacement.csrfTokenHash,
+        ipHash: replacement.ipRiskKey,
+        userAgentHash: replacement.userAgentSummary,
+        createdAt: replacement.createdAt,
+        lastSeenAt: replacement.lastSeenAt,
+        idleExpiresAt: replacement.idleExpiresAt,
+        absoluteExpiresAt: replacement.absoluteExpiresAt,
+        revokedAt: replacement.revokedAt,
+      });
+      return true;
+    });
   }
 
   async listSessionsByUser(userId: string): Promise<SessionRecord[]> {

@@ -4,6 +4,7 @@ import {
   bootstrapAccountRequestSchema,
   changePasswordRequestSchema,
   clientEventSchema,
+  deleteAccountRequestSchema,
   forgotPasswordRequestSchema,
   loginAccountRequestSchema,
   logoutRequestSchema,
@@ -60,6 +61,12 @@ import {
   runRetentionJobs,
   type DatabaseState,
 } from "./db/index.js";
+import {
+  echoArchives as echoArchivesTable,
+  feedback as feedbackTable,
+  games as gamesTable,
+  reports as reportsTable,
+} from "./db/schema.js";
 import {
   FeedbackDigestWorker,
   FeedbackService,
@@ -128,6 +135,22 @@ function sha256(value: string): string {
 
 function getIp(request: FastifyRequest): string {
   return request.ip || request.socket.remoteAddress || "unknown";
+}
+
+export function resolveTrustProxy(
+  production: boolean,
+  rawSetting = process.env.TRUST_PROXY,
+): boolean | string {
+  const configured = rawSetting?.trim();
+  if (configured?.toLowerCase() === "true") {
+    throw new Error(
+      "TRUST_PROXY 禁止配置为 true；必须限制为明确的代理网段。",
+    );
+  }
+  if (configured?.toLowerCase() === "false") return false;
+  if (configured) return configured;
+  // Docker/Caddy 生产拓扑只信任回环、链路本地和私有网段中的直接代理。
+  return production ? "loopback, linklocal, uniquelocal" : false;
 }
 
 function positiveIntegerEnvironment(
@@ -239,7 +262,7 @@ export async function buildServer(
         "req.query.ticket",
       ],
     },
-    trustProxy: false,
+    trustProxy: resolveTrustProxy(production),
     bodyLimit: 16 * 1024,
   });
   const sessions = new Map<string, Session>();
@@ -362,6 +385,16 @@ export async function buildServer(
       },
     },
   );
+  const localRootEmail = process.env.LOCAL_ROOT_EMAIL?.trim();
+  const localRootPassword = process.env.LOCAL_ROOT_PASSWORD;
+  if (!production && (localRootEmail || localRootPassword)) {
+    if (!localRootEmail || !localRootPassword) {
+      throw new Error(
+        "本地 ROOT 初始化必须同时配置 LOCAL_ROOT_EMAIL 与 LOCAL_ROOT_PASSWORD。",
+      );
+    }
+    await authService.upsertRootAccount(localRootEmail, localRootPassword);
+  }
   const deviceService = new DeviceService(authRepository);
   const gameRepository = database.available
     ? new GameRepository(database.db)
@@ -772,6 +805,7 @@ export async function buildServer(
       playerNumber: user.playerNumber,
       displayName: user.displayName,
       status: user.status,
+      role: user.role,
     };
   }
 
@@ -836,7 +870,8 @@ export async function buildServer(
       path === "/api/session/logout" ||
       path === "/api/feedback" ||
       path.startsWith("/api/games/") ||
-      path.startsWith("/api/echo/");
+      path.startsWith("/api/echo/") ||
+      path === "/api/admin/dashboard";
     const decision = originPolicy.evaluateHttp(request.method, origin);
     if (
       !decision.allowed &&
@@ -1552,6 +1587,43 @@ export async function buildServer(
     },
   );
 
+  app.delete<{ Body: unknown }>("/api/account", async (request, reply) => {
+    const session = await sessionFromRequest(request);
+    if (!session?.accountAuthenticated) {
+      throw new AppError(
+        "ACCOUNT_REQUIRED",
+        "请先登录账户，再注销账号。",
+        401,
+      );
+    }
+    requireCsrf(request, session);
+    await consumeGameRateLimit("account.delete", session);
+    const parsed = deleteAccountRequestSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new AppError(
+        "INVALID_ACCOUNT_DELETION",
+        "请输入当前密码，并填写“注销”完成确认。",
+      );
+    }
+    await authService.deleteAccount(
+      session.userId,
+      parsed.data.currentPassword,
+    );
+    for (const [tokenHash, runtimeSession] of sessions) {
+      if (runtimeSession.userId !== session.userId) continue;
+      runtimeSession.socket?.close(4003, "Account deleted");
+      sessions.delete(tokenHash);
+    }
+    reply.header(
+      "set-cookie",
+      serializeSessionCookie("", cookiePolicy, {
+        maxAgeSeconds: 0,
+        expires: new Date(0),
+      }),
+    );
+    return { deleted: true as const };
+  });
+
   app.post<{ Body: unknown }>(
     "/api/auth/logout",
     async (request, reply) => {
@@ -1808,6 +1880,131 @@ export async function buildServer(
       }),
     );
     return { loggedOut: true };
+  });
+
+  app.get("/api/admin/dashboard", async (request) => {
+    const session = await sessionFromRequest(request);
+    if (!session?.accountAuthenticated) {
+      throw new AppError(
+        "ACCOUNT_REQUIRED",
+        "请先登录 ROOT 账户。",
+        401,
+      );
+    }
+    const user = await authService.assertAccountCapability(
+      session.userId,
+      "ACCOUNT",
+    );
+    if (user.role !== "ROOT") {
+      throw new AppError(
+        "ROOT_REQUIRED",
+        "该页面仅限 ROOT 账户访问。",
+        403,
+      );
+    }
+
+    const accountMetrics = await authRepository.getAdminAccountMetrics();
+    const aiSnapshot = aiRuntimeController.snapshot();
+    const matchOperations = games.getOperationsSnapshot();
+    const onlineUserIds = new Set(
+      [...sessions.values()]
+        .filter(
+          (runtimeSession) =>
+            runtimeSession.accountAuthenticated &&
+            runtimeSession.socket?.readyState === 1,
+        )
+        .map((runtimeSession) => runtimeSession.userId),
+    );
+    const activeGames = [...games.rooms.values()].filter(
+      (room) => room.status === "active",
+    ).length;
+    let totalGames = games.rooms.size;
+    let humanGames = [...games.rooms.values()].filter(
+      (room) => room.opponentType === "human",
+    ).length;
+    let aiGames = [...games.rooms.values()].filter(
+      (room) => room.opponentType === "ai",
+    ).length;
+    let savedEchoArchives = 0;
+    let pendingFeedback = await feedbackRepository?.countPending() ?? 0;
+    let pendingReports = games.reports.size;
+    if (database.available) {
+      const [
+        [gameCount],
+        [humanGameCount],
+        [aiGameCount],
+        [echoCount],
+        [feedbackCount],
+        [reportCount],
+      ] = await Promise.all([
+        database.db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(gamesTable),
+        database.db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(gamesTable)
+          .where(sql`${gamesTable.matchType} = 'human'`),
+        database.db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(gamesTable)
+          .where(sql`${gamesTable.matchType} = 'ai'`),
+        database.db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(echoArchivesTable)
+          .where(sql`${echoArchivesTable.status} = 'available'`),
+        database.db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(feedbackTable)
+          .where(
+            sql`${feedbackTable.deliveryStatus} IN ('pending', 'failed')`,
+          ),
+        database.db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(reportsTable)
+          .where(sql`${reportsTable.status} IN ('pending', 'reviewing')`),
+      ]);
+      totalGames = gameCount?.count ?? 0;
+      humanGames = humanGameCount?.count ?? 0;
+      aiGames = aiGameCount?.count ?? 0;
+      savedEchoArchives = echoCount?.count ?? 0;
+      pendingFeedback = feedbackCount?.count ?? 0;
+      pendingReports = reportCount?.count ?? 0;
+    }
+
+    return {
+      generatedAt: new Date().toISOString(),
+      databaseMode: database.available
+        ? ("postgresql" as const)
+        : ("memory-demo" as const),
+      metrics: {
+        registeredUsers: accountMetrics.registeredUsers,
+        newUsersToday: accountMetrics.newUsersToday,
+        newUsers7d: accountMetrics.newUsers7d,
+        previous7dUsers: accountMetrics.previous7dUsers,
+        visitsToday: accountMetrics.visitsToday,
+        visits7d: accountMetrics.visits7d,
+        previous7dVisits: accountMetrics.previous7dVisits,
+        verifiedUsers: accountMetrics.verifiedUsers,
+        pendingVerificationUsers:
+          accountMetrics.pendingVerificationUsers,
+        activeSessions: accountMetrics.activeSessions,
+        onlineUsers: onlineUserIds.size,
+        totalGames,
+        activeGames,
+        humanGames,
+        aiGames,
+        waitingPlayers: matchOperations.waitingPlayers,
+        admittingPlayers: matchOperations.admittingPlayers,
+        roomCapacity: matchOperations.roomCapacity,
+        savedEchoArchives,
+        pendingFeedback,
+        pendingReports,
+        aiRequestsThisHour: aiSnapshot.hourlyRequests,
+        tokensToday: aiSnapshot.dailyTokens,
+        tokenBudgetToday: aiSnapshot.dailyTokenBudget,
+      },
+      daily: accountMetrics.daily,
+    };
   });
 
   app.get<{

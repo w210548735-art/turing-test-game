@@ -211,6 +211,64 @@ describe("认证基础能力", () => {
     );
   });
 
+  it("已撤销会话不能被陈旧更新恢复，且并发轮换只有一次成功", async () => {
+    const repository = new InMemoryAuthRepository();
+    let now = new Date("2026-07-24T00:00:00.000Z");
+    const sessions = new SessionService(
+      repository,
+      { idleTtlMs: 60_000, absoluteTtlMs: 3_600_000 },
+      () => now,
+    );
+
+    const revoked = await sessions.create("user-race");
+    const stale = await repository.findSessionByHash(
+      revoked.session.tokenHash,
+    );
+    assert.ok(stale);
+    assert.equal(await sessions.revoke(revoked.token), true);
+    now = new Date(now.getTime() + 1_000);
+    stale.lastSeenAt = now;
+    await repository.updateSession(stale);
+    assert.equal(
+      await repository.touchActiveSession(
+        revoked.session.tokenHash,
+        now,
+        new Date(now.getTime() + 60_000),
+      ),
+      undefined,
+    );
+    await expectAuthRejection(
+      () => sessions.authenticate(revoked.token),
+      "SESSION_REVOKED",
+    );
+
+    const rotating = await sessions.create("user-race");
+    const attempts = await Promise.allSettled([
+      sessions.rotate(rotating.token),
+      sessions.rotate(rotating.token),
+    ]);
+    assert.equal(
+      attempts.filter((attempt) => attempt.status === "fulfilled").length,
+      1,
+    );
+    const rejected = attempts.find(
+      (attempt): attempt is PromiseRejectedResult =>
+        attempt.status === "rejected",
+    );
+    assert.ok(rejected);
+    assert.equal((rejected.reason as AuthError).code, "SESSION_REVOKED");
+    const replacement = attempts.find(
+      (attempt): attempt is PromiseFulfilledResult<
+        Awaited<ReturnType<SessionService["rotate"]>>
+      > => attempt.status === "fulfilled",
+    );
+    assert.ok(replacement);
+    assert.equal(
+      (await sessions.authenticate(replacement.value.token)).userId,
+      "user-race",
+    );
+  });
+
   it("设备令牌只存摘要并关联使用过的账号", async () => {
     const repository = new InMemoryAuthRepository();
     let now = new Date("2026-07-24T00:00:00.000Z");

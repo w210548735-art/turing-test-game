@@ -98,6 +98,43 @@ async function registerAndVerify(
 }
 
 describe("AuthService 账户生命周期", () => {
+  it("以幂等方式创建或覆盖已验证的 ROOT 账户", async () => {
+    const fixture = createFixture();
+    const first = await fixture.auth.upsertRootAccount(
+      "owner@example.com",
+      "First-Root!Password-2026",
+    );
+    assert.equal(first.role, "ROOT");
+    assert.equal(first.status, "ACTIVE");
+    assert.ok(first.emailVerifiedAt);
+
+    const replaced = await fixture.auth.upsertRootAccount(
+      "OWNER@example.com",
+      "Second-Root!Password-2026",
+    );
+    assert.equal(replaced.id, first.id);
+    assert.equal(replaced.role, "ROOT");
+    await expectAuthRejection(
+      () =>
+        fixture.auth.login(
+          "owner@example.com",
+          "First-Root!Password-2026",
+        ),
+      "INVALID_CREDENTIALS",
+    );
+    const login = await fixture.auth.login(
+      "owner@example.com",
+      "Second-Root!Password-2026",
+    );
+    assert.equal(login.session.userId, first.id);
+    const metrics = await fixture.repository.getAdminAccountMetrics(
+      new Date("2026-07-24T00:00:59.999Z"),
+    );
+    assert.equal(metrics.verifiedUsers, 1);
+    assert.equal(metrics.pendingVerificationUsers, 0);
+    assert.equal(metrics.activeSessions, 1);
+  });
+
   it("注册使用恒定公共结果并完成邮箱验证", async () => {
     const fixture = createFixture();
     const first = await fixture.auth.register(
@@ -304,7 +341,7 @@ describe("AuthService 账户生命周期", () => {
     assert.equal("tokenHash" in exported.sessions[0]!, false);
 
     fixture.setNow(new Date("2026-07-24T00:05:00.000Z"));
-    await fixture.auth.deleteAccount(user.id);
+    await fixture.auth.deleteAccount(user.id, "Quartz!River-2026");
     const deleted = await fixture.repository.findUserById(user.id);
     assert.equal(deleted?.status, "DELETED");
     assert.match(deleted?.emailCanonical ?? "", /@deleted\.invalid$/u);

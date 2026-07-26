@@ -7,6 +7,7 @@
     "dev": "tsx watch src/index.ts",
     "start": "node dist/src/index.js",
     "db:migrate": "node dist/src/db/migrate.js",
+    "account:upsert-root": "node dist/src/auth/upsert-root-cli.js",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsx --test tests/**/*.test.ts"

@@ -95,8 +95,9 @@ export class SessionService {
   }
 
   async authenticate(token: string): Promise<SessionRecord> {
+    const tokenHash = hashOpaqueToken(token);
     const record = await this.repository.findSessionByHash(
-      hashOpaqueToken(token),
+      tokenHash,
     );
     if (!record) {
       throw new AuthError("SESSION_INVALID", "会话无效。");
@@ -109,52 +110,59 @@ export class SessionService {
       now.getTime() >= record.idleExpiresAt.getTime() ||
       now.getTime() >= record.absoluteExpiresAt.getTime()
     ) {
-      record.revokedAt = now;
-      await this.repository.updateSession(record);
+      await this.repository.revokeSession(tokenHash, now);
       throw new AuthError("SESSION_EXPIRED", "会话已过期。");
     }
 
-    record.lastSeenAt = now;
-    record.idleExpiresAt = new Date(
+    const idleExpiresAt = new Date(
       Math.min(
         now.getTime() + this.policy.idleTtlMs,
         record.absoluteExpiresAt.getTime(),
       ),
     );
-    await this.repository.updateSession(record);
-    return record;
+    const touched = await this.repository.touchActiveSession(
+      tokenHash,
+      now,
+      idleExpiresAt,
+    );
+    if (!touched) {
+      const latest = await this.repository.findSessionByHash(tokenHash);
+      if (latest?.revokedAt) {
+        throw new AuthError("SESSION_REVOKED", "会话已撤销。");
+      }
+      if (
+        latest &&
+        (now.getTime() >= latest.idleExpiresAt.getTime() ||
+          now.getTime() >= latest.absoluteExpiresAt.getTime())
+      ) {
+        throw new AuthError("SESSION_EXPIRED", "会话已过期。");
+      }
+      throw new AuthError("SESSION_INVALID", "会话无效。");
+    }
+    return touched;
   }
 
   async revoke(token: string): Promise<boolean> {
-    const record = await this.repository.findSessionByHash(
+    return this.repository.revokeSession(
       hashOpaqueToken(token),
+      this.now(),
     );
-    if (!record || record.revokedAt) return false;
-    record.revokedAt = this.now();
-    await this.repository.updateSession(record);
-    return true;
   }
 
   async revokeAll(
     userId: string,
     exceptSessionId?: string,
   ): Promise<number> {
-    const now = this.now();
-    let revoked = 0;
-    for (const session of await this.repository.listSessionsByUser(userId)) {
-      if (session.revokedAt || session.id === exceptSessionId) continue;
-      session.revokedAt = now;
-      await this.repository.updateSession(session);
-      revoked += 1;
-    }
-    return revoked;
+    return this.repository.revokeSessionsByUser(
+      userId,
+      this.now(),
+      exceptSessionId,
+    );
   }
 
   async rotate(token: string): Promise<IssuedSession> {
     const current = await this.authenticate(token);
-    current.revokedAt = this.now();
-    await this.repository.updateSession(current);
-    return this.issue(
+    const replacement = this.buildIssuedSession(
       current.userId,
       current.createdAt,
       current.absoluteExpiresAt,
@@ -166,6 +174,15 @@ export class SessionService {
           : {}),
       },
     );
+    const replaced = await this.repository.replaceActiveSession(
+      current.tokenHash,
+      replacement.session,
+      this.now(),
+    );
+    if (!replaced) {
+      throw new AuthError("SESSION_REVOKED", "会话已撤销。");
+    }
+    return replacement;
   }
 
   private async issue(
@@ -174,6 +191,22 @@ export class SessionService {
     absoluteExpiresAt: Date,
     context: SessionContext,
   ): Promise<IssuedSession> {
+    const issued = this.buildIssuedSession(
+      userId,
+      createdAt,
+      absoluteExpiresAt,
+      context,
+    );
+    await this.repository.saveSession(issued.session);
+    return issued;
+  }
+
+  private buildIssuedSession(
+    userId: string,
+    createdAt: Date,
+    absoluteExpiresAt: Date,
+    context: SessionContext,
+  ): IssuedSession {
     const token = createOpaqueToken();
     const now = this.now();
     const sessionId = randomUUID();
@@ -202,7 +235,6 @@ export class SessionService {
         ? { userAgentSummary: context.userAgentSummary.slice(0, 200) }
         : {}),
     };
-    await this.repository.saveSession(session);
     return { token, csrfToken: csrf.token, session };
   }
 }

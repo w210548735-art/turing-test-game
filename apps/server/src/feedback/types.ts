@@ -36,6 +36,7 @@ export interface ClaimFeedbackDigestInput {
 
 export interface FeedbackRepositoryPort {
   create(input: NewFeedback): Promise<FeedbackRecord>;
+  countPending(): Promise<number>;
   claimDigest(
     input: ClaimFeedbackDigestInput,
   ): Promise<FeedbackDigestClaim | null>;

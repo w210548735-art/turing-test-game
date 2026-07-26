@@ -197,6 +197,46 @@ export class AuthService {
     return { ...REGISTER_RESULT };
   }
 
+  /**
+   * 仅供受控启动脚本和部署命令调用，不暴露为公共 HTTP 接口。
+   * 已存在账户会被激活、提升为 ROOT 并轮换密码与全部会话。
+   */
+  async upsertRootAccount(
+    email: unknown,
+    password: unknown,
+  ): Promise<AuthUser> {
+    const emailCanonical = canonicalizeEmail(email);
+    const emailOriginal = normalizeOriginalEmail(email);
+    const validPassword = validatePassword(password, emailCanonical);
+    const passwordHash = await this.passwordHasher.hash(validPassword);
+    const now = this.now();
+    const existing =
+      await this.repository.findUserByCanonicalEmail(emailCanonical);
+    if (!existing) {
+      return this.repository.createUser(
+        {
+          emailOriginal,
+          emailCanonical,
+          passwordHash,
+          status: "ACTIVE",
+          role: "ROOT",
+          emailVerifiedAt: now,
+        },
+        now,
+      );
+    }
+    existing.emailOriginal = emailOriginal;
+    existing.emailCanonical = emailCanonical;
+    existing.passwordHash = passwordHash;
+    existing.status = "ACTIVE";
+    existing.role = "ROOT";
+    existing.emailVerifiedAt = now;
+    existing.updatedAt = now;
+    const updated = await this.repository.updateUser(existing);
+    await this.sessions.revokeAll(updated.id);
+    return updated;
+  }
+
   async verifyEmail(token: string): Promise<AuthUser> {
     const consumed = await this.verificationTokens.consume(
       token,
@@ -354,9 +394,18 @@ export class AuthService {
     return this.sessions.revokeAll(userId, currentSessionId);
   }
 
-  async deleteAccount(userId: string): Promise<void> {
+  async deleteAccount(
+    userId: string,
+    currentPassword: unknown,
+  ): Promise<void> {
     const user = await this.requireUser(userId);
     this.assertStatus(user, "ACCOUNT");
+    if (
+      typeof currentPassword !== "string" ||
+      !(await this.passwordHasher.verify(user.passwordHash, currentPassword))
+    ) {
+      throw this.invalidCredentials();
+    }
     const now = this.now();
     user.emailOriginal = `deleted-${user.id}@deleted.invalid`;
     user.emailCanonical = user.emailOriginal;

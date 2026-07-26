@@ -32,6 +32,12 @@ export class MemoryFeedbackRepository implements FeedbackRepositoryPort {
     return record;
   }
 
+  async countPending(): Promise<number> {
+    return this.records.filter(
+      (record) => record.deliveryStatus !== "sent",
+    ).length;
+  }
+
   async claimDigest(
     input: ClaimFeedbackDigestInput,
   ): Promise<FeedbackDigestClaim | null> {

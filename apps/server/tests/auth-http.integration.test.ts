@@ -93,6 +93,63 @@ describe("账户认证 HTTP 路由", () => {
     await context.app.close();
   });
 
+  it("只允许账户级 ROOT 读取运营统计面板", async () => {
+    const normalEmail = "dashboard-player@example.com";
+    const normalPassword = "Dashboard-Player!2026";
+    await context.auth.repository.createUser({
+      emailCanonical: normalEmail,
+      passwordHash: `test:${normalPassword}`,
+      status: "ACTIVE",
+      role: "PLAYER",
+      emailVerifiedAt: new Date("2026-07-26T01:00:00.000Z"),
+    });
+    const normalLogin = await context.app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      headers: { origin: TEST_ORIGIN },
+      payload: { email: normalEmail, password: normalPassword },
+    });
+    assert.equal(normalLogin.statusCode, 200);
+    const forbidden = await context.app.inject({
+      method: "GET",
+      url: "/api/admin/dashboard",
+      headers: {
+        origin: TEST_ORIGIN,
+        cookie: cookieHeader(normalLogin.headers["set-cookie"]),
+      },
+    });
+    assert.equal(forbidden.statusCode, 403);
+
+    const rootEmail = "dashboard-root@example.com";
+    const rootPassword = "Quartz!Nebula-Root-2026";
+    await context.auth.service.upsertRootAccount(rootEmail, rootPassword);
+    const rootLogin = await context.app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      headers: { origin: TEST_ORIGIN },
+      payload: { email: rootEmail, password: rootPassword },
+    });
+    assert.equal(rootLogin.statusCode, 200);
+    assert.equal(rootLogin.json().user.role, "ROOT");
+    const dashboard = await context.app.inject({
+      method: "GET",
+      url: "/api/admin/dashboard",
+      headers: {
+        origin: TEST_ORIGIN,
+        cookie: cookieHeader(rootLogin.headers["set-cookie"]),
+      },
+    });
+    assert.equal(dashboard.statusCode, 200);
+    assert.equal(dashboard.json().databaseMode, "memory-demo");
+    assert.equal(dashboard.json().daily.length, 7);
+    assert.ok(dashboard.json().metrics.registeredUsers >= 2);
+    assert.ok(dashboard.json().metrics.verifiedUsers >= 2);
+    assert.ok(dashboard.json().metrics.activeSessions >= 2);
+    assert.equal(dashboard.json().metrics.roomCapacity, 50);
+    assert.equal(dashboard.json().metrics.pendingFeedback, 0);
+    assert.equal(dashboard.json().metrics.pendingReports, 0);
+  });
+
   it("完成注册、验证、登录、bootstrap、改资料、重置密码和注销", async () => {
     const email = "account-route@example.com";
     const oldPassword = "Valid-Password-2026!";
@@ -195,6 +252,7 @@ describe("账户认证 HTTP 路由", () => {
         playerNumber: loginBody.user.playerNumber,
         displayName: "夜航观察员",
         status: "ACTIVE",
+        role: "PLAYER",
       },
     });
 
@@ -310,6 +368,97 @@ describe("账户认证 HTTP 路由", () => {
     });
     assert.equal(logout.statusCode, 200);
     assert.deepEqual(logout.json(), { loggedOut: true });
+  });
+
+  it("账户注销要求密码与确认文本，并撤销全部会话", async () => {
+    const email = "delete-account-route@example.com";
+    const password = "Delete-Account-Password-2026!";
+    await context.app.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      headers: { origin: TEST_ORIGIN },
+      payload: { email, password },
+    });
+    await context.app.inject({
+      method: "POST",
+      url: "/api/auth/verify-email",
+      headers: { origin: TEST_ORIGIN },
+      payload: {
+        token: outbox.latest("EMAIL_VERIFICATION").token,
+      },
+    });
+    const login = await context.app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      headers: { origin: TEST_ORIGIN },
+      payload: { email, password },
+    });
+    const body = login.json<{ csrfToken: string }>();
+    const cookies = cookieHeader(login.headers["set-cookie"]);
+
+    const invalidConfirmation = await context.app.inject({
+      method: "DELETE",
+      url: "/api/account",
+      headers: {
+        origin: TEST_ORIGIN,
+        cookie: cookies,
+        "x-csrf-token": body.csrfToken,
+      },
+      payload: {
+        currentPassword: password,
+        confirmation: "删除",
+      },
+    });
+    assert.equal(invalidConfirmation.statusCode, 400);
+
+    const wrongPassword = await context.app.inject({
+      method: "DELETE",
+      url: "/api/account",
+      headers: {
+        origin: TEST_ORIGIN,
+        cookie: cookies,
+        "x-csrf-token": body.csrfToken,
+      },
+      payload: {
+        currentPassword: "Wrong-Password-2026!",
+        confirmation: "注销",
+      },
+    });
+    assert.equal(wrongPassword.statusCode, 401);
+
+    const deleted = await context.app.inject({
+      method: "DELETE",
+      url: "/api/account",
+      headers: {
+        origin: TEST_ORIGIN,
+        cookie: cookies,
+        "x-csrf-token": body.csrfToken,
+      },
+      payload: {
+        currentPassword: password,
+        confirmation: "注销",
+      },
+    });
+    assert.equal(deleted.statusCode, 200);
+    assert.deepEqual(deleted.json(), { deleted: true });
+
+    const bootstrap = await context.app.inject({
+      method: "POST",
+      url: "/api/auth/bootstrap",
+      headers: {
+        origin: TEST_ORIGIN,
+        cookie: cookies,
+      },
+    });
+    assert.equal(bootstrap.statusCode, 401);
+
+    const relogin = await context.app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      headers: { origin: TEST_ORIGIN },
+      payload: { email, password },
+    });
+    assert.equal(relogin.statusCode, 401);
   });
 
   it("拒绝缺失 Origin、错误 CSRF 与重复使用验证 Token", async () => {

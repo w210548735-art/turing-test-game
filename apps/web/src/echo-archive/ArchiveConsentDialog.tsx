@@ -82,8 +82,9 @@ export function ArchiveConsentDialog({
         ) : (
           <>
             <p className="modal-lead">
-              只有双方都愿意，这局才会在安全处理后成为“回声档案”。
-              原始账户 ID 不会出现，鉴证官只会看到匿名玩家 A 与 B。
+              只有双方都愿意，这段对话才会在匿名化与安全处理后，
+              成为下一位鉴证官的谜面。原始账户 ID 不会出现，
+              鉴证官只会看到匿名玩家 A 与 B。
             </p>
             <ul className="archive-consent-facts">
               <li>仅归档已经发送的消息与服务器观察到的相对时间轴</li>

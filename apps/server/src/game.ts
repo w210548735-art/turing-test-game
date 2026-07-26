@@ -112,6 +112,12 @@ export interface MatchMetrics {
   aboveTarget: boolean;
 }
 
+export interface MatchOperationsSnapshot {
+  waitingPlayers: number;
+  admittingPlayers: number;
+  roomCapacity: number;
+}
+
 export class GameService {
   readonly rooms = new Map<string, Room>();
   readonly reports = new Map<string, ReportRecord>();
@@ -581,6 +587,17 @@ export class GameService {
       aiRatio,
       target: AI_RATIO_TARGET,
       aboveTarget: aiRatio > AI_RATIO_TARGET,
+    };
+  }
+
+  getOperationsSnapshot(): MatchOperationsSnapshot {
+    return {
+      waitingPlayers: this.searching.length + this.capacityQueue.length,
+      admittingPlayers: [...this.admissions.values()].reduce(
+        (total, admission) => total + admission.players.length,
+        0,
+      ),
+      roomCapacity: this.maxConcurrentRooms,
     };
   }
 

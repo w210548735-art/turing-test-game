@@ -57,6 +57,13 @@
       "when": 1785117600000,
       "tag": "0007_account_identity",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1785200400000,
+      "tag": "0008_account_roles",
+      "breakpoints": true
     }
   ]
 }

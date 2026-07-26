@@ -151,6 +151,7 @@ describe("默认策略", () => {
       "auth.login",
       "auth.register",
       "account.password.change",
+      "account.delete",
       "email.verification.send",
       "email.password_reset.send",
       "match.join",

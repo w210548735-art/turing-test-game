@@ -6,6 +6,7 @@ import {
   inArray,
   isNull,
   lte,
+  sql,
 } from "drizzle-orm";
 import type {
   ClaimFeedbackDigestInput,
@@ -32,6 +33,14 @@ export class FeedbackRepository {
   async create(input: NewFeedbackRow): Promise<FeedbackRow> {
     const [row] = await this.db.insert(feedback).values(input).returning();
     return requiredRow(row, "createFeedback");
+  }
+
+  async countPending(): Promise<number> {
+    const [row] = await this.db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(feedback)
+      .where(inArray(feedback.deliveryStatus, ["pending", "failed"]));
+    return row?.count ?? 0;
   }
 
   async claimDigest(

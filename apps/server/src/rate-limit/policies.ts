@@ -84,6 +84,16 @@ export const DEFAULT_RATE_LIMIT_POLICIES: RateLimitPolicies = {
       { id: "global-1h", dimension: "global", limit: 1_000, windowMs: HOUR },
     ],
   },
+  "account.delete": {
+    operation: "account.delete",
+    rules: [
+      { id: "user-1d", dimension: "user", limit: 3, windowMs: DAY, required: true },
+      { id: "session-1d", dimension: "session", limit: 3, windowMs: DAY, required: true },
+      { id: "device-1d", dimension: "device", limit: 5, windowMs: DAY, required: true },
+      { id: "ip-1d", dimension: "ip", limit: 10, windowMs: DAY, required: true },
+      { id: "global-1d", dimension: "global", limit: 1_000, windowMs: DAY },
+    ],
+  },
   "match.join": {
     operation: "match.join",
     rules: [

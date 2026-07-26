@@ -2,8 +2,11 @@ import {
   accountProfileInputSchema,
   accountProfileResponseSchema,
   accountSessionResponseSchema,
+  adminDashboardResponseSchema,
   changePasswordRequestSchema,
   changePasswordResponseSchema,
+  deleteAccountRequestSchema,
+  deleteAccountResponseSchema,
   forgotPasswordRequestSchema,
   forgotPasswordResponseSchema,
   loginAccountRequestSchema,
@@ -19,8 +22,10 @@ import {
   verifyEmailRequestSchema,
   verifyEmailResponseSchema,
   type AccountSessionResponse,
+  type AdminDashboardResponse,
   type AccountProfileInput,
   type ChangePasswordRequest,
+  type DeleteAccountRequest,
   type ClientEvent,
   type ForgotPasswordRequest,
   type FeedbackCategory,
@@ -37,7 +42,9 @@ import {
 export type {
   AccountProfileInput,
   AccountSessionResponse,
+  AdminDashboardResponse,
   ChangePasswordRequest,
+  DeleteAccountRequest,
   ClientEvent,
   FeedbackCategory,
   ProfileInput,
@@ -86,7 +93,11 @@ function inputValidationMessage(
   if (field === "email") {
     return "请输入有效的邮箱地址。";
   }
-  if (field === "password" || field === "newPassword") {
+  if (
+    field === "password" ||
+    field === "currentPassword" ||
+    field === "newPassword"
+  ) {
     if (issue?.code === "too_small") {
       return "密码至少需要 12 个字符。";
     }
@@ -97,6 +108,9 @@ function inputValidationMessage(
   }
   if (field === "token") {
     return invalidTokenMessage;
+  }
+  if (field === "confirmation") {
+    return "请输入“注销”完成确认。";
   }
   return "提交内容格式不正确，请检查后重试。";
 }
@@ -209,6 +223,17 @@ export async function bootstrapAccount(): Promise<AccountSessionResponse | null>
   return accountSessionResponseSchema.parse(await response.json());
 }
 
+export async function fetchAdminDashboard(): Promise<AdminDashboardResponse> {
+  const response = await fetch(`${API_BASE}/api/admin/dashboard`, {
+    method: "GET",
+    credentials: "include",
+  });
+  if (!response.ok) {
+    throw new Error(await parseError(response));
+  }
+  return adminDashboardResponseSchema.parse(await response.json());
+}
+
 export async function forgotAccountPassword(
   input: ForgotPasswordRequest,
 ): Promise<ReturnType<typeof forgotPasswordResponseSchema.parse>> {
@@ -272,6 +297,28 @@ export async function logoutAccount(
     throw new Error(await parseError(response));
   }
   return logoutResponseSchema.parse(await response.json());
+}
+
+export async function deleteAccount(
+  csrfToken: string,
+  input: DeleteAccountRequest,
+): Promise<ReturnType<typeof deleteAccountResponseSchema.parse>> {
+  const validatedInput = parseAccountInput(
+    deleteAccountRequestSchema.safeParse(input),
+  );
+  const response = await fetch(`${API_BASE}/api/account`, {
+    method: "DELETE",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": csrfToken,
+    },
+    body: JSON.stringify(validatedInput),
+  });
+  if (!response.ok) {
+    throw new Error(await parseError(response));
+  }
+  return deleteAccountResponseSchema.parse(await response.json());
 }
 
 export async function submitAccountFeedback(

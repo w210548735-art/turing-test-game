@@ -1,11 +1,28 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import {
+  EchoArchivePage,
   JudgmentForm,
   JudgmentResult,
 } from "./EchoArchivePage";
 
 const noop = vi.fn();
+
+describe("回声档案叙事入口", () => {
+  it("用档案式悬疑文案解释异步判读", () => {
+    const markup = renderToStaticMarkup(
+      <EchoArchivePage
+        csrfToken="csrf-token"
+        onBack={noop}
+        onOpenRecords={noop}
+      />,
+    );
+
+    expect(markup).toContain("过去已经沉默");
+    expect(markup).toContain("证词还在");
+    expect(markup).toContain("两份独立身份判断");
+  });
+});
 
 describe("回声档案双身份判定", () => {
   it("回放完成且 A/B 都选择身份后允许提交双重判断", () => {
@@ -88,5 +105,6 @@ describe("回声鉴证结案页", () => {
     expect(markup).toContain("本局 +4");
     expect(markup).toContain("双身份全对 +10");
     expect(markup).toContain("带着答案重看");
+    expect(markup).toContain("一道声音被你认出");
   });
 });

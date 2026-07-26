@@ -29,6 +29,11 @@ describe("教学模式引导", () => {
     expect(markup).toContain("教学 01");
     expect(markup).toContain("先起一个本局名字");
     expect(markup).toContain("开始教学对局");
+    expect(markup).toContain("语言会伪装");
+    expect(markup).toContain("你");
+    expect(markup).toContain("相信");
+    expect(markup).toContain("谁");
+    expect(markup).toContain("停顿、措辞，甚至犹豫都可能成为证词");
     expect(markup).toContain("tutorial-ring");
   });
 
@@ -64,6 +69,8 @@ describe("教学模式引导", () => {
     expect(markup).toContain("点一个问题试试");
     expect(markup).toContain("教学 05 · 写好后点发送");
     expect(markup).toContain("教学 06 · 最后在这里判断");
+    expect(markup).toContain("别急着问好");
+    expect(markup).toContain("答案重要，迟疑也重要");
   });
 
   it("在结算页明确提示教学完成", () => {

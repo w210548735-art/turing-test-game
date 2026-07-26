@@ -5,6 +5,7 @@ export type AccountStatus =
   | "SUSPENDED"
   | "BANNED"
   | "DELETED";
+export type AccountRole = "PLAYER" | "ROOT";
 
 export interface AuthUser {
   id: string;
@@ -16,6 +17,7 @@ export interface AuthUser {
   nickname: string;
   typingStatus: string;
   status: AccountStatus;
+  role: AccountRole;
   emailVerifiedAt?: Date;
   createdAt: Date;
   updatedAt: Date;

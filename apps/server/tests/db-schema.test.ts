@@ -452,4 +452,22 @@ describe("数据库结构", () => {
       /ALTER COLUMN "player_number" SET DEFAULT/,
     );
   });
+
+  it("账户角色默认 PLAYER，ROOT 提升迁移不硬编码任何邮箱", async () => {
+    const columns = getTableColumns(users);
+    assert.equal(columns.role.name, "role");
+    assert.equal(columns.role.notNull, true);
+    assert.equal(columns.role.default, "player");
+
+    const migrationUrl = new URL(
+      "../drizzle/0008_account_roles.sql",
+      import.meta.url,
+    );
+    const sql = await readFile(migrationUrl, "utf8");
+    assert.match(sql, /ENUM\('player', 'root'\)/);
+    assert.match(sql, /ADD COLUMN "role"/);
+    assert.match(sql, /users_role_status_idx/);
+    assert.doesNotMatch(sql, /210548735|qq\.com/i);
+    assert.doesNotMatch(sql, /DROP (?:TABLE|COLUMN|TYPE|INDEX)/i);
+  });
 });

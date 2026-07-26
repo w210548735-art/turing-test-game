@@ -13,6 +13,7 @@ export const accountStatusSchema = z.enum([
   "BANNED",
   "DELETED",
 ]);
+export const accountRoleSchema = z.enum(["PLAYER", "ROOT"]);
 
 const publicAuthResultSchema = z
   .object({
@@ -28,6 +29,53 @@ const accountUserSchema = z
     playerNumber: z.number().int().min(100_001),
     displayName: z.string().trim().min(2).max(18),
     status: accountStatusSchema,
+    role: accountRoleSchema,
+  })
+  .strict();
+
+export const adminDashboardResponseSchema = z
+  .object({
+    generatedAt: z.string().datetime(),
+    databaseMode: z.enum(["postgresql", "memory-demo"]),
+    metrics: z
+      .object({
+        registeredUsers: z.number().int().nonnegative(),
+        newUsersToday: z.number().int().nonnegative(),
+        newUsers7d: z.number().int().nonnegative(),
+        previous7dUsers: z.number().int().nonnegative(),
+        visitsToday: z.number().int().nonnegative(),
+        visits7d: z.number().int().nonnegative(),
+        previous7dVisits: z.number().int().nonnegative(),
+        verifiedUsers: z.number().int().nonnegative(),
+        pendingVerificationUsers: z.number().int().nonnegative(),
+        activeSessions: z.number().int().nonnegative(),
+        onlineUsers: z.number().int().nonnegative(),
+        totalGames: z.number().int().nonnegative(),
+        activeGames: z.number().int().nonnegative(),
+        humanGames: z.number().int().nonnegative(),
+        aiGames: z.number().int().nonnegative(),
+        waitingPlayers: z.number().int().nonnegative(),
+        admittingPlayers: z.number().int().nonnegative(),
+        roomCapacity: z.number().int().positive(),
+        savedEchoArchives: z.number().int().nonnegative(),
+        pendingFeedback: z.number().int().nonnegative(),
+        pendingReports: z.number().int().nonnegative(),
+        aiRequestsThisHour: z.number().int().nonnegative(),
+        tokensToday: z.number().int().nonnegative(),
+        tokenBudgetToday: z.number().int().positive(),
+      })
+      .strict(),
+    daily: z
+      .array(
+        z
+          .object({
+            date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u),
+            registrations: z.number().int().nonnegative(),
+            visits: z.number().int().nonnegative(),
+          })
+          .strict(),
+      )
+      .length(7),
   })
   .strict();
 
@@ -116,6 +164,19 @@ export const changePasswordRequestSchema = z
 export const changePasswordResponseSchema = z
   .object({
     changed: z.literal(true),
+  })
+  .strict();
+
+export const deleteAccountRequestSchema = z
+  .object({
+    currentPassword: passwordSchema,
+    confirmation: z.literal("注销"),
+  })
+  .strict();
+
+export const deleteAccountResponseSchema = z
+  .object({
+    deleted: z.literal(true),
   })
   .strict();
 
@@ -469,6 +530,10 @@ export const serverEventSchema = z.discriminatedUnion("type", [
 
 export type Identity = z.infer<typeof identitySchema>;
 export type AccountStatus = z.infer<typeof accountStatusSchema>;
+export type AccountRole = z.infer<typeof accountRoleSchema>;
+export type AdminDashboardResponse = z.infer<
+  typeof adminDashboardResponseSchema
+>;
 export type RegisterAccountRequest = z.infer<
   typeof registerAccountRequestSchema
 >;
@@ -508,6 +573,12 @@ export type ChangePasswordRequest = z.infer<
 >;
 export type ChangePasswordResponse = z.infer<
   typeof changePasswordResponseSchema
+>;
+export type DeleteAccountRequest = z.infer<
+  typeof deleteAccountRequestSchema
+>;
+export type DeleteAccountResponse = z.infer<
+  typeof deleteAccountResponseSchema
 >;
 export type LogoutRequest = z.infer<typeof logoutRequestSchema>;
 export type LogoutResponse = z.infer<typeof logoutResponseSchema>;

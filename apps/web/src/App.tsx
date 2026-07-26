@@ -18,6 +18,7 @@ import {
   type GuessTarget,
 } from "./game-machine";
 import {
+  EMPTY_LOCAL_RECORD,
   hitRate,
   localRecordKey,
   readLocalRecord,
@@ -34,15 +35,23 @@ import {
 } from "./typing-heartbeat";
 import { ArchiveConsentDialog } from "./echo-archive/ArchiveConsentDialog";
 import { EchoArchivePage } from "./echo-archive/EchoArchivePage";
-import { EchoRecordPage } from "./echo-archive/EchoRecordPage";
+import {
+  PlayerRecordsPage,
+  type RecordMode,
+} from "./records/PlayerRecordsPage";
+import { AccountSettingsPage } from "./account/AccountSettingsPage";
+import { AdminDashboardPage } from "./admin/AdminDashboardPage";
 import {
   bootstrapAccount,
   changeAccountPassword,
+  deleteAccount,
   DemoTransport,
   forgotAccountPassword,
+  fetchAdminDashboard,
   loginAccount,
   logoutAccount,
   type AccountSessionResponse,
+  type AdminDashboardResponse,
   type GameTransport,
   OnlineTransport,
   registerAccount,
@@ -62,10 +71,10 @@ const THINKING_SUGGESTIONS = [
 ];
 
 const MATCH_SEARCH_MESSAGES = [
-  "正在为你寻找一位旗鼓相当的对手",
-  "正在扫描此刻在线的匿名玩家",
-  "好的对话，值得多等一会儿",
-  "正在把两位观察者带到同一扇门前",
+  "正在为你寻找一个尚未署名的声音",
+  "正在扫描此刻在线的匿名信号",
+  "有些答案，值得让沉默先发生",
+  "正在把两段陌生的语言带进同一个房间",
 ];
 
 const BILIBILI_SPACE_URL =
@@ -75,7 +84,7 @@ const GITHUB_PROJECT_URL =
   "https://github.com/w210548735-art/turing-test-game";
 
 type AuthMode = "login" | "register" | "forgot" | "reset" | "verify";
-type ActiveView = "game" | "record" | "echo" | "echo-record";
+type ActiveView = "game" | "records" | "settings" | "echo" | "admin";
 
 interface InitialAuthRoute {
   mode: AuthMode;
@@ -163,6 +172,11 @@ export default function App() {
   const [leaveOpen, setLeaveOpen] = useState(false);
   const [logoutOpen, setLogoutOpen] = useState(false);
   const [activeView, setActiveView] = useState<ActiveView>("game");
+  const [adminData, setAdminData] =
+    useState<AdminDashboardResponse | null>(null);
+  const [adminLoading, setAdminLoading] = useState(false);
+  const [adminError, setAdminError] = useState<string | null>(null);
+  const [recordMode, setRecordMode] = useState<RecordMode>("duel");
   const [archiveConsentGameId, setArchiveConsentGameId] =
     useState<string | null>(null);
   const [creatorOpen, setCreatorOpen] = useState(false);
@@ -265,6 +279,34 @@ export default function App() {
   useEffect(() => {
     setLocalRecord(readLocalRecord(recordKey));
   }, [recordKey]);
+
+  const refreshAdminDashboard = useCallback(async () => {
+    if (accountSession?.user.role !== "ROOT") return;
+    setAdminLoading(true);
+    setAdminError(null);
+    try {
+      setAdminData(await fetchAdminDashboard());
+    } catch (error) {
+      setAdminError(
+        error instanceof Error ? error.message : "运营数据加载失败。",
+      );
+    } finally {
+      setAdminLoading(false);
+    }
+  }, [accountSession?.user.role]);
+
+  useEffect(() => {
+    if (activeView !== "admin") return;
+    if (accountSession?.user.role !== "ROOT") {
+      setActiveView("settings");
+      return;
+    }
+    void refreshAdminDashboard();
+    const timer = window.setInterval(() => {
+      void refreshAdminDashboard();
+    }, 15_000);
+    return () => window.clearInterval(timer);
+  }, [activeView, accountSession?.user.role, refreshAdminDashboard]);
 
   useEffect(() => {
     if (
@@ -627,6 +669,42 @@ export default function App() {
     [accountSession],
   );
 
+  const handleDeleteAccount = useCallback(
+    async (currentPassword: string, confirmation: string) => {
+      if (!accountSession) {
+        throw new Error("请先登录账户，再执行账号注销。");
+      }
+      if (confirmation !== "注销") {
+        throw new Error("请输入“注销”完成确认。");
+      }
+
+      const deletedRecordKey = localRecordKey(accountSession.user.id);
+      await deleteAccount(accountSession.csrfToken, {
+        currentPassword,
+        confirmation,
+      });
+
+      transportRef.current?.close();
+      transportRef.current = null;
+      try {
+        window.localStorage.removeItem(deletedRecordKey);
+      } catch {
+        // 浏览器禁用本地存储时，服务端注销仍然有效。
+      }
+      setLocalRecord({ ...EMPTY_LOCAL_RECORD, games: [] });
+      setAccountSession(null);
+      setLocalDemoBypass(false);
+      setNickname("");
+      setActiveView("game");
+      setRecordMode("duel");
+      setArchiveConsentGameId(null);
+      dispatch({ type: "RESET_ALL" });
+      setAuthMode("login");
+      setAuthMessage("账号已注销，相关身份已经匿名化。");
+    },
+    [accountSession],
+  );
+
   async function handleFeedbackSubmit(input: {
     category: FeedbackCategory;
     title: string;
@@ -927,9 +1005,12 @@ export default function App() {
             <button
               className="header-record"
               type="button"
-              onClick={() => setActiveView("record")}
+              onClick={() => {
+                setRecordMode("duel");
+                setActiveView("records");
+              }}
             >
-              <span>账户数据</span>
+              <span>玩家档案</span>
               <strong className="header-player-name">
                 {accountSession?.user.displayName || "教学模式"}
               </strong>
@@ -1022,15 +1103,40 @@ export default function App() {
           />
         )}
 
-        {!showAccountAccess && activeView === "record" && (
-          <AccountRecordPage
+        {!showAccountAccess && activeView === "records" && (
+          <PlayerRecordsPage
             record={localRecord}
             accountUser={accountSession?.user}
-            echoEnabled={Boolean(accountSession)}
+            mode={recordMode}
+            onModeChange={setRecordMode}
             onBack={() => setActiveView("game")}
-            onEchoRecords={() => setActiveView("echo-record")}
+            onSettings={() => {
+              if (accountSession) {
+                setActiveView("settings");
+                return;
+              }
+              setLocalDemoBypass(false);
+              setAuthMode("login");
+            }}
+          />
+        )}
+
+        {!showAccountAccess &&
+          activeView === "settings" &&
+          accountSession && (
+          <AccountSettingsPage
+            accountUser={accountSession.user}
+            busy={authBusy}
+            onBack={() => setActiveView("records")}
             onSaveDisplayName={handleDisplayNameSave}
             onChangePassword={handleChangePassword}
+            onLogout={() => setLogoutOpen(true)}
+            onDeleteAccount={handleDeleteAccount}
+            onAdmin={
+              accountSession.user.role === "ROOT"
+                ? () => setActiveView("admin")
+                : undefined
+            }
             onCreator={() => setCreatorOpen(true)}
             onSupport={() => setSupportOpen(true)}
             onFeedback={() => {
@@ -1042,21 +1148,27 @@ export default function App() {
         )}
 
         {!showAccountAccess &&
+          activeView === "admin" &&
+          accountSession?.user.role === "ROOT" && (
+          <AdminDashboardPage
+            data={adminData}
+            loading={adminLoading}
+            error={adminError}
+            onBack={() => setActiveView("settings")}
+            onRefresh={() => void refreshAdminDashboard()}
+          />
+        )}
+
+        {!showAccountAccess &&
           activeView === "echo" &&
           accountSession && (
           <EchoArchivePage
             csrfToken={accountSession.csrfToken}
             onBack={() => setActiveView("game")}
-            onOpenRecords={() => setActiveView("echo-record")}
-          />
-        )}
-
-        {!showAccountAccess &&
-          activeView === "echo-record" &&
-          accountSession && (
-          <EchoRecordPage
-            onBack={() => setActiveView("record")}
-            onArchive={() => setActiveView("echo")}
+            onOpenRecords={() => {
+              setRecordMode("echo");
+              setActiveView("records");
+            }}
           />
         )}
 
@@ -1544,18 +1656,19 @@ export function Onboarding({
       <div className="hero-copy">
         <p className="eyebrow">A FIVE-MINUTE SOCIAL EXPERIMENT</p>
         <h1>
-          屏幕另一边
+          语言会伪装，
           <br />
-          是<span>谁</span>？
+          你<span>相信</span>谁？
         </h1>
         <p className="hero-description">
-          和一位匿名玩家对话。观察停顿、措辞和破绽，然后作出唯一一次判断：
-          <strong> 真人，还是 AI。</strong>
+          在一段匿名对话里，停顿、措辞，甚至犹豫都可能成为证词。
+          对话结束前，你只有一次机会决定：
+          <strong> 另一端，是人，还是 AI。</strong>
         </p>
         <div className="hero-rules" aria-label="游戏规则">
-          <span>01 / 匿名对话</span>
-          <span>02 / 20 秒后判断</span>
-          <span>03 / 身份揭晓</span>
+          <span>01 / 匿名相遇</span>
+          <span>02 / 20 秒后可判断</span>
+          <span>03 / 真相揭晓</span>
         </div>
       </div>
 
@@ -1565,7 +1678,7 @@ export function Onboarding({
         </div>
         <div className="panel-heading">
           <p>ENTER THE ROOM</p>
-          <h2>设定你的公开身份</h2>
+          <h2>先为这一局取个名字</h2>
           {accountIdentity && (
             <span className="signed-in-as">{accountIdentity}</span>
           )}
@@ -1661,7 +1774,7 @@ export function Onboarding({
             <strong>回声档案</strong>
             <small>
               {onlineEnabled
-                ? "作为回声鉴证官，判读一段匿名历史对话"
+                ? "作为回声鉴证官，重听一段身份未署名的对话"
                 : "登录账户后才可领取匿名档案"}
             </small>
           </span>
@@ -1785,7 +1898,7 @@ function SearchMatching({
           <h1>
             正在寻找
             <br />
-            <span>你的对手</span>
+            <span>另一端的声音</span>
           </h1>
           <p className="search-message" role="status" aria-live="polite">
             {message}
@@ -1859,9 +1972,9 @@ function AdmissionGate({
         <div>
           <p className="eyebrow">PLAYER / {nickname.toUpperCase()}</p>
           <h1>
-            等待对手
+            另一端正在
             <br />
-            <span>进入房间</span>
+            <span>接入房间</span>
           </h1>
           {demoMode && (
             <TutorialCallout step="03" title="观察统一入场" compact>
@@ -2057,8 +2170,10 @@ export function ChatRoom({
                   系统每局会随机抽出 3 道题。点击后会自动填入输入框，你仍可以继续修改。
                 </TutorialCallout>
               )}
-              <h2>别从“你好”开始。</h2>
-              <p>选择一个不容易被模板回答的问题，观察对方如何犹豫。</p>
+              <h2>别急着问好。</h2>
+              <p>
+                问一个需要记忆、偏好或犹豫才能回答的问题。答案重要，迟疑也重要。
+              </p>
               <div
                 className={`opening-questions${tutorialMode ? " tutorial-ring tutorial-ring-questions" : ""}`}
                 aria-label="开场问题建议"
@@ -2197,8 +2312,10 @@ function GuessDialog({
           ×
         </button>
         <p className="eyebrow">FINAL DECISION / ONLY ONCE</p>
-        <h2 id="guess-title">屏幕另一边是谁？</h2>
-        <p className="modal-lead">提交后无法修改，对话也会立即冻结。</p>
+        <h2 id="guess-title">现在，你相信哪一种答案？</h2>
+        <p className="modal-lead">
+          这是本局唯一一次判断。提交后无法修改，对话也会立即冻结。
+        </p>
         <form onSubmit={onSubmit}>
           <div className="identity-choice">
             <label className={target === "human" ? "is-active" : ""}>
@@ -2510,10 +2627,7 @@ export function AccountRecordPage({
               : "教学模式身份"}
           </span>
         </div>
-        <p>
-          在这里切换查看 1v1 对局与回声鉴证战绩。普通对局当前保存在本机，
-          回声档案由登录账户在云端同步。
-        </p>
+        <p>你的 1v1 对局与回声鉴证记录。</p>
       </div>
 
       <nav className="record-mode-switcher" aria-label="战绩模式">
@@ -3096,7 +3210,7 @@ export function ResultScreen({
     `我在 TURING? 中判断${result.isCorrect ? "正确" : "失误"}。`,
     `屏幕另一边是${actualIdentity}，我的判断是${playerGuess}。`,
     `${finalMessageCount} 条消息 · ${finalScore >= 0 ? "+" : ""}${finalScore} 分 · ${finalStreak} 连胜`,
-    "你能分辨屏幕另一边是谁吗？",
+    "当语言会伪装，你还相信自己的判断吗？",
   ].join("\n");
 
   async function copyResult() {
@@ -3301,7 +3415,9 @@ export function ResultScreen({
             <p>{nickname}，你判断对方是</p>
             <strong>{playerGuess}</strong>
             <span>
-              {result.isCorrect ? "你的判断正确。" : "这次，对方骗过了你。"}
+              {result.isCorrect
+                ? "这一次，你读懂了另一端。"
+                : "这一次，语言替对方藏住了身份。"}
             </span>
           </div>
         </div>
