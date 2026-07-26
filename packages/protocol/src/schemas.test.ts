@@ -26,6 +26,8 @@ import {
   profileInputSchema,
   registerAccountRequestSchema,
   registerAccountResponseSchema,
+  resendVerificationRequestSchema,
+  resendVerificationResponseSchema,
   resetPasswordRequestSchema,
   resetPasswordResponseSchema,
   serverEventSchema,
@@ -97,6 +99,27 @@ describe("共享协议", () => {
         clientMessageId: "message-002",
       }).success,
     ).toBe(false);
+  });
+
+  it("严格校验重新发送验证邮件的公共契约", () => {
+    expect(
+      resendVerificationRequestSchema.safeParse({
+        email: "pending@example.com",
+      }).success,
+    ).toBe(true);
+    expect(
+      resendVerificationRequestSchema.safeParse({
+        email: "pending@example.com",
+        accountExists: true,
+      }).success,
+    ).toBe(false);
+    expect(
+      resendVerificationResponseSchema.safeParse({
+        accepted: true,
+        message:
+          "如果该邮箱仍在等待验证，我们会发送新的验证邮件；旧链接将失效。",
+      }).success,
+    ).toBe(true);
   });
 
   it("校验玩家资料和结算消息", () => {

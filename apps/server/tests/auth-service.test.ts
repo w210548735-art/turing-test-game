@@ -171,6 +171,82 @@ describe("AuthService 账户生命周期", () => {
     );
   });
 
+  it("重新发送验证邮件使用统一响应并让旧验证 Token 失效", async () => {
+    const fixture = createFixture();
+    await fixture.auth.register(
+      "pending@example.com",
+      "Quartz!Mailer-2026",
+    );
+    const firstMessage = fixture.outbox.messages.at(-1);
+    assert.ok(firstMessage);
+
+    const resent = await fixture.auth.resendVerification(
+      "PENDING@example.com",
+    );
+    const secondMessage = fixture.outbox.messages.at(-1);
+    assert.ok(secondMessage);
+    assert.notEqual(secondMessage.token, firstMessage.token);
+    await expectAuthRejection(
+      () => fixture.auth.verifyEmail(firstMessage.token),
+      "TOKEN_INVALID",
+    );
+    assert.equal(
+      (await fixture.auth.verifyEmail(secondMessage.token)).status,
+      "ACTIVE",
+    );
+
+    const deliveredAfterVerification = fixture.outbox.messages.length;
+    const activeResult =
+      await fixture.auth.resendVerification("pending@example.com");
+    const missingResult =
+      await fixture.auth.resendVerification("missing@example.com");
+    assert.deepEqual(activeResult, resent);
+    assert.deepEqual(missingResult, resent);
+    assert.equal(
+      fixture.outbox.messages.length,
+      deliveredAfterVerification,
+    );
+  });
+
+  it("SMTP 投递失败保持公共响应并产生不含敏感字段的告警事件", async () => {
+    const repository = new InMemoryAuthRepository();
+    const events: unknown[] = [];
+    const auth = new AuthService(
+      repository,
+      new TestPasswordHasher(),
+      new VerificationTokenService(repository),
+      new SessionService(repository),
+      {
+        async send() {
+          throw new Error("fixture smtp unavailable");
+        },
+      },
+      {
+        onEmailDeliveryFailure(event) {
+          events.push(event);
+        },
+      },
+      () => new Date("2026-07-26T09:00:00.000Z"),
+    );
+
+    const result = await auth.register(
+      "alert-target@example.com",
+      "Alert!Target-2026",
+    );
+    assert.equal(result.accepted, true);
+    assert.equal(events.length, 1);
+    assert.deepEqual(events[0], {
+      purpose: "EMAIL_VERIFICATION",
+      operation: "REGISTER_VERIFICATION",
+      errorName: "Error",
+      occurredAt: new Date("2026-07-26T09:00:00.000Z"),
+    });
+    assert.doesNotMatch(
+      JSON.stringify(events),
+      /alert-target|Alert!Target|fixture smtp unavailable/u,
+    );
+  });
+
   it("登录创建带风险上下文的会话且使用统一失败错误", async () => {
     const fixture = createFixture();
     const user = await registerAndVerify(fixture);

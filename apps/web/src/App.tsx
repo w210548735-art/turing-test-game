@@ -55,6 +55,7 @@ import {
   type GameTransport,
   OnlineTransport,
   registerAccount,
+  resendAccountVerification,
   resetAccountPassword,
   saveProfile,
   saveAccountProfile,
@@ -83,7 +84,13 @@ const DOUYIN_SPACE_URL = "https://v.douyin.com/l_xBqIYez08/";
 const GITHUB_PROJECT_URL =
   "https://github.com/w210548735-art/turing-test-game";
 
-type AuthMode = "login" | "register" | "forgot" | "reset" | "verify";
+type AuthMode =
+  | "login"
+  | "register"
+  | "resend"
+  | "forgot"
+  | "reset"
+  | "verify";
 type ActiveView = "game" | "records" | "settings" | "echo" | "admin";
 
 interface InitialAuthRoute {
@@ -579,6 +586,25 @@ export default function App() {
     } catch (error) {
       setAuthError(
         error instanceof Error ? error.message : "无法提交密码重置请求。",
+      );
+    } finally {
+      setAuthBusy(false);
+    }
+  }, []);
+
+  const handleResendVerification = useCallback(async (email: string) => {
+    setAuthBusy(true);
+    setAuthError(null);
+    setAuthMessage(null);
+    try {
+      const result = await resendAccountVerification({ email });
+      setAuthMessage(
+        result.message || "如果账户仍待验证，新的验证邮件将很快送达。",
+      );
+      setAuthMode("login");
+    } catch (error) {
+      setAuthError(
+        error instanceof Error ? error.message : "无法重新发送验证邮件。",
       );
     } finally {
       setAuthBusy(false);
@@ -1092,6 +1118,7 @@ export default function App() {
             onModeChange={changeAuthMode}
             onLogin={handleLogin}
             onRegister={handleRegister}
+            onResendVerification={handleResendVerification}
             onForgotPassword={handleForgotPassword}
             onResetPassword={handleResetPassword}
             onLocalDemo={() => {
@@ -1337,7 +1364,7 @@ export default function App() {
   );
 }
 
-interface AccountAccessProps {
+export interface AccountAccessProps {
   mode: AuthMode;
   loading: boolean;
   busy: boolean;
@@ -1347,12 +1374,13 @@ interface AccountAccessProps {
   onModeChange: (mode: AuthMode) => void;
   onLogin: (email: string, password: string) => Promise<void>;
   onRegister: (email: string, password: string) => Promise<void>;
+  onResendVerification: (email: string) => Promise<void>;
   onForgotPassword: (email: string) => Promise<void>;
   onResetPassword: (newPassword: string) => Promise<void>;
   onLocalDemo: () => void;
 }
 
-function AccountAccess({
+export function AccountAccess({
   mode,
   loading,
   busy,
@@ -1362,6 +1390,7 @@ function AccountAccess({
   onModeChange,
   onLogin,
   onRegister,
+  onResendVerification,
   onForgotPassword,
   onResetPassword,
   onLocalDemo,
@@ -1384,6 +1413,10 @@ function AccountAccess({
     try {
       if (mode === "forgot") {
         await onForgotPassword(email);
+        return;
+      }
+      if (mode === "resend") {
+        await onResendVerification(email);
         return;
       }
       if (mode === "reset") {
@@ -1412,13 +1445,15 @@ function AccountAccess({
   const title =
     mode === "register"
       ? "创建账户"
-      : mode === "forgot"
-        ? "找回密码"
-        : mode === "reset"
-          ? "设置新密码"
-          : mode === "verify"
-            ? "验证邮箱"
-            : "账户登录";
+      : mode === "resend"
+        ? "重新发送验证邮件"
+        : mode === "forgot"
+          ? "找回密码"
+          : mode === "reset"
+            ? "设置新密码"
+            : mode === "verify"
+              ? "验证邮箱"
+              : "账户登录";
 
   return (
     <section className="account-screen page-grid" aria-busy={loading || busy}>
@@ -1484,7 +1519,7 @@ function AccountAccess({
               </label>
             )}
 
-            {mode !== "forgot" && (
+            {mode !== "forgot" && mode !== "resend" && (
               <label className="field">
                 <span>{mode === "reset" ? "新密码" : "密码"} / PASSWORD</span>
                 <input
@@ -1553,6 +1588,8 @@ function AccountAccess({
                   ? "正在处理…"
                   : mode === "register"
                     ? "注册并验证"
+                    : mode === "resend"
+                      ? "重新发送验证邮件"
                     : mode === "forgot"
                       ? "发送重置邮件"
                       : mode === "reset"
@@ -1575,6 +1612,9 @@ function AccountAccess({
               <>
                 <button type="button" onClick={() => switchMode("register")}>
                   开放注册
+                </button>
+                <button type="button" onClick={() => switchMode("resend")}>
+                  重新发送验证邮件
                 </button>
                 <button type="button" onClick={() => switchMode("forgot")}>
                   忘记密码
@@ -2960,7 +3000,7 @@ export function CreatorDialog({ onClose }: { onClose: () => void }) {
         >
           ×
         </button>
-        <p className="creator-kicker">FOLLOW THE CREATOR / 03</p>
+        <p className="creator-kicker">FOLLOW THE CREATOR / 04</p>
         <h2 id="creator-title">来找作者玩叭</h2>
         <p>
           开发碎片、更新进度和偶尔掉落的脑洞，都在这里等你喵
@@ -2997,6 +3037,19 @@ export function CreatorDialog({ onClose }: { onClose: () => void }) {
             <strong>去 GitHub 看看项目</strong>
             <i aria-hidden="true">↗</i>
           </a>
+          <article
+            className="creator-platform is-business"
+            aria-label="商务合作微信"
+          >
+            <span>WECHAT / BUSINESS</span>
+            <strong>商务合作</strong>
+            <small>
+              微信 W210548735
+              <br />
+              添加时请备注来意
+            </small>
+            <i aria-hidden="true">＋</i>
+          </article>
         </div>
         <button className="support-close-action" type="button" onClick={onClose}>
           好哒，晚点去逛

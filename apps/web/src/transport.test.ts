@@ -7,6 +7,7 @@ import {
   loginAccount,
   logoutAccount,
   registerAccount,
+  resendAccountVerification,
   resetAccountPassword,
   saveAccountProfile,
   saveProfile,
@@ -103,6 +104,31 @@ describe("账户传输", () => {
       "Content-Type": "application/json",
     });
     expect(init.headers).not.toHaveProperty("Authorization");
+  });
+
+  it("重新发送验证邮件只提交规范化邮箱并使用统一公共响应", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          accepted: true,
+          message:
+            "如果该邮箱仍在等待验证，我们会发送新的验证邮件；旧链接将失效。",
+        }),
+        { status: 202, headers: { "content-type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await resendAccountVerification({
+      email: "pending@example.com",
+    });
+    expect(result.accepted).toBe(true);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/auth/resend-verification");
+    expect(init.credentials).toBe("include");
+    expect(JSON.parse(String(init.body))).toEqual({
+      email: "pending@example.com",
+    });
   });
 
   it("注册参数先经过表单 Schema，不发送无效短密码", async () => {

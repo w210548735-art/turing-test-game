@@ -103,6 +103,71 @@ describe("PostgresAuthRepository PostgreSQL 语义", () => {
     assert.equal((rejected.reason as AuthError).code, "TOKEN_CONSUMED");
   });
 
+  it("验证 Token 轮换在事务中撤销旧链接并只保留新链接", async () => {
+    const user = await repository.createUser(
+      accountInput("rotated-token@example.com"),
+    );
+    const tokens = new VerificationTokenService(repository);
+    const first = await tokens.issue(
+      user.id,
+      "EMAIL_VERIFICATION",
+      60_000,
+    );
+    const second = await tokens.rotate(
+      user.id,
+      "EMAIL_VERIFICATION",
+      60_000,
+    );
+
+    await assert.rejects(
+      () => tokens.consume(first.token, "EMAIL_VERIFICATION", user.id),
+      (error: unknown) =>
+        error instanceof AuthError && error.code === "TOKEN_INVALID",
+    );
+    assert.equal(
+      (
+        await tokens.consume(
+          second.token,
+          "EMAIL_VERIFICATION",
+          user.id,
+        )
+      ).subjectId,
+      user.id,
+    );
+
+    const [concurrentFirst, concurrentSecond] = await Promise.all([
+      tokens.rotate(user.id, "EMAIL_VERIFICATION", 60_000),
+      tokens.rotate(user.id, "EMAIL_VERIFICATION", 60_000),
+    ]);
+    const concurrentConsumption = await Promise.allSettled([
+      tokens.consume(
+        concurrentFirst.token,
+        "EMAIL_VERIFICATION",
+        user.id,
+      ),
+      tokens.consume(
+        concurrentSecond.token,
+        "EMAIL_VERIFICATION",
+        user.id,
+      ),
+    ]);
+    assert.equal(
+      concurrentConsumption.filter(
+        (attempt) => attempt.status === "fulfilled",
+      ).length,
+      1,
+    );
+    const concurrentRejected = concurrentConsumption.find(
+      (attempt): attempt is PromiseRejectedResult =>
+        attempt.status === "rejected",
+    );
+    assert.ok(concurrentRejected);
+    assert.equal(
+      (concurrentRejected.reason as AuthError).code,
+      "TOKEN_INVALID",
+    );
+  });
+
   it("AuthService 并发注册遇到唯一冲突仍返回统一公共结果", async () => {
     const passwordHasher: PasswordHasher = {
       async hash(password) {

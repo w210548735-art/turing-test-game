@@ -15,6 +15,8 @@ import {
   profileInputSchema,
   registerAccountRequestSchema,
   registerAccountResponseSchema,
+  resendVerificationRequestSchema,
+  resendVerificationResponseSchema,
   resetPasswordRequestSchema,
   resetPasswordResponseSchema,
   submitFeedbackRequestSchema,
@@ -33,6 +35,7 @@ import {
   type LoginAccountRequest,
   type ProfileInput,
   type RegisterAccountRequest,
+  type ResendVerificationRequest,
   type ResetPasswordRequest,
   type ServerEvent,
   type SubmitFeedbackRequest,
@@ -177,6 +180,22 @@ export async function registerAccount(
     throw new Error(await parseError(response));
   }
   return registerAccountResponseSchema.parse(await response.json());
+}
+
+export async function resendAccountVerification(
+  input: ResendVerificationRequest,
+): Promise<ReturnType<typeof resendVerificationResponseSchema.parse>> {
+  const validatedInput = parseAccountInput(
+    resendVerificationRequestSchema.safeParse(input),
+  );
+  const response = await postJson(
+    "/api/auth/resend-verification",
+    validatedInput,
+  );
+  if (!response.ok) {
+    throw new Error(await parseError(response));
+  }
+  return resendVerificationResponseSchema.parse(await response.json());
 }
 
 export async function verifyAccountEmail(

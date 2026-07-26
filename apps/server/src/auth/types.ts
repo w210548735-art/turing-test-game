@@ -37,6 +37,7 @@ export interface VerificationTokenRecord {
   createdAt: Date;
   expiresAt: Date;
   consumedAt?: Date;
+  revokedAt?: Date;
 }
 
 export interface SessionRecord {

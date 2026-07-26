@@ -370,6 +370,148 @@ describe("账户认证 HTTP 路由", () => {
     assert.deepEqual(logout.json(), { loggedOut: true });
   });
 
+  it("重新发送验证邮件保持账号不可枚举并使旧链接失效", async () => {
+    const email = "resend-route@example.com";
+    const remoteAddress = "192.0.2.42";
+    await context.app.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      remoteAddress,
+      headers: { origin: TEST_ORIGIN },
+      payload: { email, password: "Resend!Route-2026" },
+    });
+    const first = outbox.latest("EMAIL_VERIFICATION");
+
+    const resent = await context.app.inject({
+      method: "POST",
+      url: "/api/auth/resend-verification",
+      remoteAddress,
+      headers: { origin: TEST_ORIGIN },
+      payload: { email },
+    });
+    assert.equal(resent.statusCode, 202);
+    const second = outbox.latest("EMAIL_VERIFICATION");
+    assert.notEqual(second.token, first.token);
+
+    const oldLink = await context.app.inject({
+      method: "POST",
+      url: "/api/auth/verify-email",
+      remoteAddress,
+      headers: { origin: TEST_ORIGIN },
+      payload: { token: first.token },
+    });
+    assert.equal(oldLink.statusCode, 400);
+    const newLink = await context.app.inject({
+      method: "POST",
+      url: "/api/auth/verify-email",
+      remoteAddress,
+      headers: { origin: TEST_ORIGIN },
+      payload: { token: second.token },
+    });
+    assert.equal(newLink.statusCode, 200);
+
+    const delivered = outbox.messages.length;
+    const active = await context.app.inject({
+      method: "POST",
+      url: "/api/auth/resend-verification",
+      remoteAddress,
+      headers: { origin: TEST_ORIGIN },
+      payload: { email },
+    });
+    const missing = await context.app.inject({
+      method: "POST",
+      url: "/api/auth/resend-verification",
+      remoteAddress: "192.0.2.43",
+      headers: { origin: TEST_ORIGIN },
+      payload: { email: "missing-resend@example.com" },
+    });
+    assert.equal(active.statusCode, 202);
+    assert.equal(missing.statusCode, 202);
+    assert.deepEqual(active.json(), missing.json());
+    assert.equal(outbox.messages.length, delivered);
+
+    const limited = await context.app.inject({
+      method: "POST",
+      url: "/api/auth/resend-verification",
+      remoteAddress,
+      headers: { origin: TEST_ORIGIN },
+      payload: { email },
+    });
+    assert.equal(limited.statusCode, 429);
+  });
+
+  it("SMTP 失败返回统一响应并触发可观测告警", async () => {
+    const alerts: unknown[] = [];
+    const failing = await buildServer({
+      authRepository: new InMemoryAuthRepository(),
+      emailDelivery: {
+        async send() {
+          throw new Error("smtp credentials rejected");
+        },
+      },
+      passwordHasher: new TestPasswordHasher(),
+      registrationOpen: true,
+      onSmtpDeliveryAlert(alert) {
+        alerts.push(alert);
+      },
+    });
+    try {
+      const response = await failing.app.inject({
+        method: "POST",
+        url: "/api/auth/register",
+        remoteAddress: "192.0.2.80",
+        headers: { origin: TEST_ORIGIN },
+        payload: {
+          email: "smtp-alert@example.com",
+          password: "Smtp!Alert-2026",
+        },
+      });
+      assert.equal(response.statusCode, 202);
+      assert.equal(alerts.length, 1);
+      assert.equal(
+        (alerts[0] as { code?: string }).code,
+        "SMTP_DELIVERY_FAILED",
+      );
+      assert.doesNotMatch(
+        JSON.stringify(alerts),
+        /smtp-alert|Smtp!Alert|credentials rejected/u,
+      );
+
+      const resent = await failing.app.inject({
+        method: "POST",
+        url: "/api/auth/resend-verification",
+        remoteAddress: "192.0.2.80",
+        headers: { origin: TEST_ORIGIN },
+        payload: { email: "smtp-alert@example.com" },
+      });
+      assert.equal(resent.statusCode, 202);
+      assert.equal(alerts.length, 2);
+      assert.equal(
+        (alerts[1] as { operation?: string }).operation,
+        "RESEND_VERIFICATION",
+      );
+
+      const deliveryStatus = failing.auth.smtpDelivery.snapshot();
+      assert.deepEqual(deliveryStatus, {
+        status: "degraded",
+        consecutiveFailures: 2,
+        totalFailures: 2,
+        lastFailureAt: deliveryStatus.lastFailureAt,
+      });
+      assert.match(
+        deliveryStatus.lastFailureAt ?? "",
+        /^\d{4}-\d{2}-\d{2}T/u,
+      );
+      const health = await failing.app.inject({
+        method: "GET",
+        url: "/api/health",
+      });
+      assert.equal(health.json().account.smtpDelivery, undefined);
+    } finally {
+      await failing.app.close();
+    }
+  });
+
   it("账户注销要求密码与确认文本，并撤销全部会话", async () => {
     const email = "delete-account-route@example.com";
     const password = "Delete-Account-Password-2026!";

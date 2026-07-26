@@ -80,6 +80,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\fix-local-test-dns.p
 - [访问项目网站](https://game.210559.top/)
 - [去 B 站关注作者](https://space.bilibili.com/485008770?spm_id_from=333.1007.0.0)
 - [去抖音看看作者](https://v.douyin.com/l_xBqIYez08/)
+- 商务合作请加微信 `W210548735`，请备注来意。
 
 如果这个项目对你有帮助，也可以自愿请作者喝杯奶茶。感谢每一份支持，
 请根据自己的情况量力而行。

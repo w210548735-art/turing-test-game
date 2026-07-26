@@ -76,6 +76,7 @@ function copyToken(token: VerificationTokenRecord): VerificationTokenRecord {
     createdAt: copyDate(token.createdAt),
     expiresAt: copyDate(token.expiresAt),
     ...(token.consumedAt ? { consumedAt: copyDate(token.consumedAt) } : {}),
+    ...(token.revokedAt ? { revokedAt: copyDate(token.revokedAt) } : {}),
   };
 }
 
@@ -202,6 +203,10 @@ export interface AuthRepository {
     tokenHash: string,
   ): Promise<VerificationTokenRecord | undefined>;
   updateVerificationToken(token: VerificationTokenRecord): Promise<void>;
+  replaceVerificationToken(
+    token: VerificationTokenRecord,
+    revokedAt: Date,
+  ): Promise<void>;
   consumeVerificationToken(
     tokenHash: string,
     purpose: VerificationTokenRecord["purpose"],
@@ -339,6 +344,25 @@ export class InMemoryAuthRepository implements AuthRepository {
     this.verificationTokens.set(token.tokenHash, copyToken(token));
   }
 
+  async replaceVerificationToken(
+    token: VerificationTokenRecord,
+    revokedAt: Date,
+  ): Promise<void> {
+    for (const [tokenHash, current] of this.verificationTokens) {
+      if (
+        current.subjectId !== token.subjectId ||
+        current.purpose !== token.purpose ||
+        current.consumedAt ||
+        current.revokedAt
+      ) {
+        continue;
+      }
+      current.revokedAt = copyDate(revokedAt);
+      this.verificationTokens.set(tokenHash, copyToken(current));
+    }
+    this.verificationTokens.set(token.tokenHash, copyToken(token));
+  }
+
   async consumeVerificationToken(
     tokenHash: string,
     purpose: VerificationTokenRecord["purpose"],
@@ -349,6 +373,7 @@ export class InMemoryAuthRepository implements AuthRepository {
     if (
       !token ||
       token.purpose !== purpose ||
+      token.revokedAt ||
       (expectedSubjectId !== undefined &&
         token.subjectId !== expectedSubjectId)
     ) {

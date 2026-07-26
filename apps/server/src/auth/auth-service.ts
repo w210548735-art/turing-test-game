@@ -34,10 +34,26 @@ export interface EmailDelivery {
   send(message: EmailMessage): Promise<void>;
 }
 
+export type EmailDeliveryOperation =
+  | "REGISTER_VERIFICATION"
+  | "RESEND_VERIFICATION"
+  | "PASSWORD_RESET";
+
+export interface EmailDeliveryAttempt {
+  purpose: EmailMessage["purpose"];
+  operation: EmailDeliveryOperation;
+  occurredAt: Date;
+}
+
+export interface EmailDeliveryFailureEvent extends EmailDeliveryAttempt {
+  errorName: string;
+}
+
 export interface AuthServiceOptions {
   emailVerificationTtlMs: number;
   passwordResetTtlMs: number;
-  onEmailDeliveryFailure: (purpose: EmailMessage["purpose"]) => void;
+  onEmailDeliverySuccess: (event: EmailDeliveryAttempt) => void;
+  onEmailDeliveryFailure: (event: EmailDeliveryFailureEvent) => void;
 }
 
 export type AccountCapability = "LOGIN" | "MATCH" | "ACCOUNT";
@@ -85,6 +101,7 @@ export interface AccountExportSummary {
 const DEFAULT_OPTIONS: AuthServiceOptions = {
   emailVerificationTtlMs: 24 * 60 * 60 * 1_000,
   passwordResetTtlMs: 30 * 60 * 1_000,
+  onEmailDeliverySuccess: () => {},
   onEmailDeliveryFailure: () => {},
 };
 
@@ -97,6 +114,12 @@ const REGISTER_RESULT: PublicAuthResult = {
 const FORGOT_PASSWORD_RESULT: PublicAuthResult = {
   accepted: true,
   message: "如果该邮箱对应可用账号，我们会发送密码重置邮件。",
+};
+
+const RESEND_VERIFICATION_RESULT: PublicAuthResult = {
+  accepted: true,
+  message:
+    "如果该邮箱仍在等待验证，我们会发送新的验证邮件；旧链接将失效。",
 };
 
 function normalizeOriginalEmail(input: unknown): string {
@@ -178,23 +201,53 @@ export class AuthService {
       }
       throw error;
     }
-    const issued = await this.verificationTokens.issue(
+    const issued = await this.verificationTokens.rotate(
       user.id,
       "EMAIL_VERIFICATION",
       this.options.emailVerificationTtlMs,
     );
-    try {
-      await this.emailDelivery.send({
+    await this.deliverEmail(
+      {
         to: user.emailOriginal,
         purpose: "EMAIL_VERIFICATION",
         token: issued.token,
         expiresAt: issued.expiresAt,
-      });
-    } catch {
-      // 邮件故障不能改变公开响应，否则会形成账号存在性旁路。
-      this.options.onEmailDeliveryFailure("EMAIL_VERIFICATION");
-    }
+      },
+      "REGISTER_VERIFICATION",
+    );
     return { ...REGISTER_RESULT };
+  }
+
+  /**
+   * 不论账户是否存在或是否仍待验证，都返回同一公共结果。
+   * 只有 PENDING_EMAIL 账户会轮换 Token 并触发真实投递。
+   */
+  async resendVerification(email: unknown): Promise<PublicAuthResult> {
+    let user: AuthUser | undefined;
+    try {
+      user = await this.repository.findUserByCanonicalEmail(
+        canonicalizeEmail(email),
+      );
+    } catch {
+      return { ...RESEND_VERIFICATION_RESULT };
+    }
+    if (user?.status === "PENDING_EMAIL") {
+      const issued = await this.verificationTokens.rotate(
+        user.id,
+        "EMAIL_VERIFICATION",
+        this.options.emailVerificationTtlMs,
+      );
+      await this.deliverEmail(
+        {
+          to: user.emailOriginal,
+          purpose: "EMAIL_VERIFICATION",
+          token: issued.token,
+          expiresAt: issued.expiresAt,
+        },
+        "RESEND_VERIFICATION",
+      );
+    }
+    return { ...RESEND_VERIFICATION_RESULT };
   }
 
   /**
@@ -294,22 +347,20 @@ export class AuthService {
       return { ...FORGOT_PASSWORD_RESULT };
     }
     if (user && (user.status === "ACTIVE" || user.status === "LIMITED")) {
-      const issued = await this.verificationTokens.issue(
+      const issued = await this.verificationTokens.rotate(
         user.id,
         "PASSWORD_RESET",
         this.options.passwordResetTtlMs,
       );
-      try {
-        await this.emailDelivery.send({
+      await this.deliverEmail(
+        {
           to: user.emailOriginal,
           purpose: "PASSWORD_RESET",
           token: issued.token,
           expiresAt: issued.expiresAt,
-        });
-      } catch {
-        // 与不存在邮箱保持相同响应；回调只接收用途，不接收邮箱或 Token。
-        this.options.onEmailDeliveryFailure("PASSWORD_RESET");
-      }
+        },
+        "PASSWORD_RESET",
+      );
     }
     return { ...FORGOT_PASSWORD_RESULT };
   }
@@ -330,6 +381,37 @@ export class AuthService {
     await this.repository.updateUser(user);
     await this.sessions.revokeAll(user.id);
     return user;
+  }
+
+  private async deliverEmail(
+    message: EmailMessage,
+    operation: EmailDeliveryOperation,
+  ): Promise<void> {
+    try {
+      await this.emailDelivery.send(message);
+    } catch (error) {
+      // 公开接口继续返回统一结果；告警事件严禁携带邮箱、Token 或错误正文。
+      try {
+        this.options.onEmailDeliveryFailure({
+          purpose: message.purpose,
+          operation,
+          errorName: error instanceof Error ? error.name : "UnknownError",
+          occurredAt: this.now(),
+        });
+      } catch {
+        // 告警适配器故障不能改变公共响应。
+      }
+      return;
+    }
+    try {
+      this.options.onEmailDeliverySuccess({
+        purpose: message.purpose,
+        operation,
+        occurredAt: this.now(),
+      });
+    } catch {
+      // 成功回调故障不能被误报为 SMTP 失败，也不能改变公共响应。
+    }
   }
 
   async changePassword(

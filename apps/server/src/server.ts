@@ -10,6 +10,7 @@ import {
   logoutRequestSchema,
   profileInputSchema,
   registerAccountRequestSchema,
+  resendVerificationRequestSchema,
   resetPasswordRequestSchema,
   submitEchoCommentRequestSchema,
   submitArchiveConsentRequestSchema,
@@ -43,6 +44,8 @@ import {
   type AuthRepository,
   type AuthUser,
   type EmailDelivery,
+  type EmailDeliveryAttempt,
+  type EmailDeliveryFailureEvent,
   type PasswordHasher,
   type SessionRecord,
 } from "./auth/index.js";
@@ -182,6 +185,7 @@ export interface ServerContext {
     devices: DeviceService;
     registrationOpen: boolean;
     emailConfigured: boolean;
+    smtpDelivery: SmtpDeliveryMonitor;
   };
   feedback: {
     configured: boolean;
@@ -198,6 +202,7 @@ export interface ServerOptions {
   emailDelivery?: EmailDelivery;
   passwordHasher?: PasswordHasher;
   registrationOpen?: boolean;
+  onSmtpDeliveryAlert?: (alert: SmtpDeliveryAlert) => void;
   feedbackRepository?: FeedbackRepositoryPort;
   feedbackDelivery?: FeedbackEmailDelivery;
   feedbackRecipientEmail?: string;
@@ -208,6 +213,59 @@ export interface ServerOptions {
     intervalMs?: number;
     autoStart?: boolean;
   };
+}
+
+export interface SmtpDeliveryStatus {
+  status: "ok" | "degraded";
+  consecutiveFailures: number;
+  totalFailures: number;
+  lastFailureAt?: string;
+}
+
+export interface SmtpDeliveryAlert {
+  code: "SMTP_DELIVERY_FAILED";
+  purpose: EmailDeliveryFailureEvent["purpose"];
+  operation: EmailDeliveryFailureEvent["operation"];
+  errorName: string;
+  occurredAt: string;
+  consecutiveFailures: number;
+  totalFailures: number;
+}
+
+export class SmtpDeliveryMonitor {
+  private consecutiveFailures = 0;
+  private totalFailures = 0;
+  private lastFailureAt?: Date;
+
+  recordSuccess(_event: EmailDeliveryAttempt): void {
+    this.consecutiveFailures = 0;
+  }
+
+  recordFailure(event: EmailDeliveryFailureEvent): SmtpDeliveryAlert {
+    this.consecutiveFailures += 1;
+    this.totalFailures += 1;
+    this.lastFailureAt = new Date(event.occurredAt);
+    return {
+      code: "SMTP_DELIVERY_FAILED",
+      purpose: event.purpose,
+      operation: event.operation,
+      errorName: event.errorName,
+      occurredAt: event.occurredAt.toISOString(),
+      consecutiveFailures: this.consecutiveFailures,
+      totalFailures: this.totalFailures,
+    };
+  }
+
+  snapshot(): SmtpDeliveryStatus {
+    return {
+      status: this.consecutiveFailures > 0 ? "degraded" : "ok",
+      consecutiveFailures: this.consecutiveFailures,
+      totalFailures: this.totalFailures,
+      ...(this.lastFailureAt
+        ? { lastFailureAt: this.lastFailureAt.toISOString() }
+        : {}),
+    };
+  }
 }
 
 export async function buildServer(
@@ -370,6 +428,7 @@ export async function buildServer(
     undefined,
     csrfService,
   );
+  const smtpDelivery = new SmtpDeliveryMonitor();
   const authService = new AuthService(
     authRepository,
     options.passwordHasher ?? new Argon2idPasswordHasher(),
@@ -377,11 +436,30 @@ export async function buildServer(
     accountSessions,
     emailDelivery,
     {
-      onEmailDeliveryFailure(purpose) {
+      onEmailDeliverySuccess(event) {
+        smtpDelivery.recordSuccess(event);
+      },
+      onEmailDeliveryFailure(event) {
+        const alert = smtpDelivery.recordFailure(event);
         app.log.error(
-          { purpose },
-          "account email delivery failed",
+          { alert: true, ...alert },
+          "SMTP delivery failure alert",
         );
+        try {
+          options.onSmtpDeliveryAlert?.(alert);
+        } catch (callbackError) {
+          app.log.error(
+            {
+              alert: true,
+              code: "SMTP_ALERT_CALLBACK_FAILED",
+              errorName:
+                callbackError instanceof Error
+                  ? callbackError.name
+                  : "UnknownError",
+            },
+            "SMTP alert callback failed",
+          );
+        }
       },
     },
   );
@@ -1035,6 +1113,37 @@ export async function buildServer(
         parsed.data.email,
         parsed.data.password,
       );
+      reply.status(202);
+      return result;
+    },
+  );
+
+  app.post<{ Body: unknown }>(
+    "/api/auth/resend-verification",
+    async (request, reply) => {
+      if (!registrationOpen) {
+        throw new AppError(
+          "REGISTRATION_CLOSED",
+          "当前暂未开放注册。",
+          403,
+        );
+      }
+      const parsed = resendVerificationRequestSchema.safeParse(
+        request.body,
+      );
+      if (!parsed.success) {
+        throw new AppError(
+          "INVALID_EMAIL",
+          "请提供有效邮箱。",
+          400,
+        );
+      }
+      await consumePublicAuthRateLimit(
+        "email.verification.send",
+        request,
+        parsed.data.email,
+      );
+      const result = await authService.resendVerification(parsed.data.email);
       reply.status(202);
       return result;
     },
@@ -2321,6 +2430,7 @@ export async function buildServer(
       devices: deviceService,
       registrationOpen,
       emailConfigured,
+      smtpDelivery,
     },
     feedback: {
       configured: Boolean(feedbackDigestWorker),

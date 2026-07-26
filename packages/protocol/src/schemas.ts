@@ -88,6 +88,14 @@ export const registerAccountRequestSchema = z
 
 export const registerAccountResponseSchema = publicAuthResultSchema;
 
+export const resendVerificationRequestSchema = z
+  .object({
+    email: emailSchema,
+  })
+  .strict();
+
+export const resendVerificationResponseSchema = publicAuthResultSchema;
+
 export const verifyEmailRequestSchema = z
   .object({
     token: z.string().min(20).max(512),
@@ -539,6 +547,12 @@ export type RegisterAccountRequest = z.infer<
 >;
 export type RegisterAccountResponse = z.infer<
   typeof registerAccountResponseSchema
+>;
+export type ResendVerificationRequest = z.infer<
+  typeof resendVerificationRequestSchema
+>;
+export type ResendVerificationResponse = z.infer<
+  typeof resendVerificationResponseSchema
 >;
 export type VerifyEmailRequest = z.infer<typeof verifyEmailRequestSchema>;
 export type VerifyEmailResponse = z.infer<typeof verifyEmailResponseSchema>;

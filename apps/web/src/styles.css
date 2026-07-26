@@ -2691,7 +2691,7 @@ button:disabled {
 
 .creator-link-list {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   margin-bottom: 26px;
   border-top: 1px solid var(--ink);
   border-left: 1px solid var(--ink);
@@ -2730,6 +2730,10 @@ button:disabled {
   background: #d9ff6f;
 }
 
+.creator-platform.is-business {
+  background: var(--paper-bright);
+}
+
 .creator-platform > span {
   align-self: start;
   font-size: 0.56rem;
@@ -2743,6 +2747,16 @@ button:disabled {
   font-size: clamp(1.2rem, 3vw, 1.9rem);
   line-height: 1.05;
   letter-spacing: -0.04em;
+}
+
+.creator-platform > small {
+  align-self: end;
+  margin-top: 12px;
+  padding-right: 30px;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1.55;
 }
 
 .creator-platform > i {

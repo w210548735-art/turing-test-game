@@ -23,6 +23,32 @@ export class VerificationTokenService {
     purpose: VerificationTokenPurpose,
     ttlMs: number,
   ): Promise<IssuedVerificationToken> {
+    const issued = this.build(subjectId, purpose, ttlMs);
+    await this.repository.saveVerificationToken(issued.record);
+    return issued.publicToken;
+  }
+
+  async rotate(
+    subjectId: string,
+    purpose: VerificationTokenPurpose,
+    ttlMs: number,
+  ): Promise<IssuedVerificationToken> {
+    const issued = this.build(subjectId, purpose, ttlMs);
+    await this.repository.replaceVerificationToken(
+      issued.record,
+      issued.record.createdAt,
+    );
+    return issued.publicToken;
+  }
+
+  private build(
+    subjectId: string,
+    purpose: VerificationTokenPurpose,
+    ttlMs: number,
+  ): {
+    record: VerificationTokenRecord;
+    publicToken: IssuedVerificationToken;
+  } {
     if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0) {
       throw new AuthError("INVALID_TOKEN_TTL", "令牌有效期必须为正整数。");
     }
@@ -36,8 +62,13 @@ export class VerificationTokenService {
       createdAt,
       expiresAt: new Date(createdAt.getTime() + ttlMs),
     };
-    await this.repository.saveVerificationToken(record);
-    return { token, expiresAt: new Date(record.expiresAt) };
+    return {
+      record,
+      publicToken: {
+        token,
+        expiresAt: new Date(record.expiresAt),
+      },
+    };
   }
 
   async consume(

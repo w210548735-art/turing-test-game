@@ -117,6 +117,7 @@ function mapVerificationToken(
     createdAt: cloneDate(row.createdAt),
     expiresAt: cloneDate(row.expiresAt),
     ...(row.usedAt ? { consumedAt: cloneDate(row.usedAt) } : {}),
+    ...(row.revokedAt ? { revokedAt: cloneDate(row.revokedAt) } : {}),
   };
 }
 
@@ -291,6 +292,7 @@ export class PostgresAuthRepository implements AuthRepository {
       tokenHash: token.tokenHash,
       expiresAt: token.expiresAt,
       usedAt: token.consumedAt,
+      revokedAt: token.revokedAt,
       createdAt: token.createdAt,
     });
   }
@@ -313,12 +315,53 @@ export class PostgresAuthRepository implements AuthRepository {
       .update(verificationTokens)
       .set({
         usedAt: token.consumedAt ?? null,
+        // 普通状态更新不得把已撤销的验证令牌恢复为有效。
+        ...(token.revokedAt ? { revokedAt: token.revokedAt } : {}),
       })
       .where(eq(verificationTokens.tokenHash, token.tokenHash))
       .returning({ id: verificationTokens.id });
     if (rows.length === 0) {
       throw new Error("Verification token does not exist");
     }
+  }
+
+  async replaceVerificationToken(
+    token: VerificationTokenRecord,
+    revokedAt: Date,
+  ): Promise<void> {
+    await this.database.transaction(async (transaction) => {
+      // 同一账户的并发重发必须串行化，避免两个事务各自留下有效新 Token。
+      await transaction.execute(sql`
+        SELECT ${users.id}
+        FROM ${users}
+        WHERE ${users.id} = ${token.subjectId}
+        FOR UPDATE
+      `);
+      await transaction
+        .update(verificationTokens)
+        .set({ revokedAt })
+        .where(
+          and(
+            eq(verificationTokens.userId, token.subjectId),
+            eq(
+              verificationTokens.purpose,
+              TOKEN_PURPOSE_TO_DATABASE[token.purpose],
+            ),
+            isNull(verificationTokens.usedAt),
+            isNull(verificationTokens.revokedAt),
+          ),
+        );
+      await transaction.insert(verificationTokens).values({
+        id: token.id,
+        userId: token.subjectId,
+        purpose: TOKEN_PURPOSE_TO_DATABASE[token.purpose],
+        tokenHash: token.tokenHash,
+        expiresAt: token.expiresAt,
+        usedAt: token.consumedAt,
+        revokedAt: token.revokedAt,
+        createdAt: token.createdAt,
+      });
+    });
   }
 
   async consumeVerificationToken(

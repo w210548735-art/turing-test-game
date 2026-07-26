@@ -96,15 +96,18 @@ describe("教学模式引导", () => {
 });
 
 describe("关注作者弹窗", () => {
-  it("同时提供 B 站、抖音和 GitHub 项目链接", () => {
+  it("同时提供三个平台链接与商务合作微信", () => {
     const markup = renderToStaticMarkup(<CreatorDialog onClose={noop} />);
 
     expect(markup).toContain("BILIBILI / 哔哩哔哩");
     expect(markup).toContain("DOUYIN / 抖音");
     expect(markup).toContain("GITHUB / OPEN SOURCE");
+    expect(markup).toContain("WECHAT / BUSINESS");
+    expect(markup).toContain("W210548735");
+    expect(markup).toContain("添加时请备注来意");
     expect(markup).toContain(
       'href="https://github.com/w210548735-art/turing-test-game"',
     );
-    expect(markup).toContain("FOLLOW THE CREATOR / 03");
+    expect(markup).toContain("FOLLOW THE CREATOR / 04");
   });
 });
