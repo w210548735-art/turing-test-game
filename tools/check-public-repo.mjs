@@ -17,7 +17,7 @@ const allowedEmailDomains = new Set([
   "turing-game.local",
   "users.noreply.github.com",
 ]);
-const allowedEmailLiterals = new Set(["redacted@example.com"]);
+const allowedEmailLiterals = new Set(["fixture-never-send@qq.com"]);
 const violations = [];
 
 function isAllowedIp(ip) {

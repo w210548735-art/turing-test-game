@@ -35,7 +35,7 @@ describe("QQ SMTP 邮件投递", () => {
       new URL("./fixtures/qq-auth-code.test-secret", import.meta.url),
     );
     const config = await loadQqSmtpConfig({
-      QQ_SMTP_USER: "redacted@example.com",
+      QQ_SMTP_USER: "fixture-never-send@qq.com",
       QQ_SMTP_AUTH_CODE: "ignored-direct-value",
       QQ_SMTP_AUTH_CODE_FILE: authCodeFile,
       QQ_SMTP_FROM_NAME: "图灵测试",
@@ -43,7 +43,7 @@ describe("QQ SMTP 邮件投递", () => {
       NODE_ENV: "production",
     });
 
-    assert.equal(config.user, "redacted@example.com");
+    assert.equal(config.user, "fixture-never-send@qq.com");
     assert.equal(config.authCode, "test-only-auth-code");
     assert.equal(config.publicBaseUrl, "https://game.example.com");
   });
