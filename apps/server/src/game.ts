@@ -1,6 +1,15 @@
 import { randomUUID } from "node:crypto";
 import type { WebSocket } from "ws";
-import { requestAiReply } from "./ai.js";
+import {
+  calculateAiReplyDelay,
+  requestAiReply,
+  selectAiConversationStyle,
+} from "./ai.js";
+import {
+  DEFAULT_HUMAN_STYLE_PROFILE,
+  type HumanConversationStyleProfile,
+} from "./ai/human-style-profile.js";
+export { AI_REPLY_DELAY_MAX_MS } from "./ai.js";
 import type {
   AiReserveRequest,
   AiSettleRequest,
@@ -37,7 +46,7 @@ export const MATCH_SEARCH_MIN_MS = 5_000;
 export const DEFAULT_MAX_CONCURRENT_ROOMS = 50;
 export const DEFAULT_MAX_QUEUE_SIZE = 500;
 export const GUESS_UNLOCK_MS = 20_000;
-export const ROOM_DURATION_MS = 5 * 60_000;
+export const ROOM_DURATION_MS = 10 * 60_000;
 export const DISCONNECT_GRACE_MS = 30_000;
 export const TYPING_EXPIRY_MS = 3_000;
 export const MAX_MESSAGES_PER_PLAYER = 20;
@@ -81,6 +90,7 @@ export interface GameServiceOptions {
   setTimer?: (callback: () => void, milliseconds: number) => NodeJS.Timeout;
   clearTimer?: (timer: NodeJS.Timeout) => void;
   aiReply?: typeof requestAiReply;
+  aiStyleProfile?: HumanConversationStyleProfile;
   onMetric?: (metric: MatchMetrics) => void;
   aiBudget?: AiBudgetController;
   aiUsageBudget?: GameAiUsageBudget;
@@ -134,6 +144,7 @@ export class GameService {
   ) => NodeJS.Timeout;
   private readonly clearTimer: (timer: NodeJS.Timeout) => void;
   private readonly aiReply: typeof requestAiReply;
+  private readonly aiStyleProfile: HumanConversationStyleProfile;
   private readonly onMetric?: (metric: MatchMetrics) => void;
   private readonly aiBudget?: AiBudgetController;
   private readonly aiUsageBudget?: GameAiUsageBudget;
@@ -153,7 +164,15 @@ export class GameService {
     this.random = options.random ?? Math.random;
     this.setTimer = options.setTimer ?? setTimeout;
     this.clearTimer = options.clearTimer ?? clearTimeout;
-    this.aiReply = options.aiReply ?? requestAiReply;
+    this.aiStyleProfile =
+      options.aiStyleProfile ?? DEFAULT_HUMAN_STYLE_PROFILE;
+    this.aiReply =
+      options.aiReply ??
+      ((request) =>
+        requestAiReply({
+          ...request,
+          styleProfile: this.aiStyleProfile,
+        }));
     this.onMetric = options.onMetric;
     this.aiBudget = options.aiBudget;
     this.aiUsageBudget = options.aiUsageBudget;
@@ -306,12 +325,6 @@ export class GameService {
         return existing;
       }
     }
-    if (participant.guess) {
-      throw new AppError(
-        "GUESS_ALREADY_LOCKED",
-        "判断锁定后不能继续发送消息。",
-      );
-    }
     if (participant.messageCount >= MAX_MESSAGES_PER_PLAYER) {
       throw new AppError(
         "MESSAGE_LIMIT_REACHED",
@@ -450,15 +463,8 @@ export class GameService {
       targetGuess: rawGuess,
     });
 
-    if (room.opponentType === "ai") {
-      return this.settle(room, "player_guessed")[0]?.view ?? null;
-    }
-    if (room.participants.every((candidate) => candidate.guess !== null)) {
-      const results = this.settle(room, "all_guessed");
-      return (
-        results.find((result) => result.userId === session.userId)?.view ?? null
-      );
-    }
+    // 判断只锁定答案，不再提前结束聊天。双方均可继续发言，
+    // 直到服务端十分钟计时结束或出现离开、断线、安全终止。
     return null;
   }
 
@@ -742,7 +748,7 @@ export class GameService {
       return;
     }
     void this.aiBudget
-      .reserveAiGame()
+      .reserveAiGame({ allowLatencyOverride: true })
       .then((decision) => {
         if (!this.searching.includes(queued)) return;
         if (decision.allowed) {
@@ -1182,6 +1188,14 @@ export class GameService {
     room.aiReplyCount += 1;
     room.aiAbort = new AbortController();
     const controller = room.aiAbort;
+    const temporaryName = room.aiTemporaryName ?? "晚风";
+    const replyDelay = calculateAiReplyDelay(
+      room.messages,
+      this.random(),
+      this.aiStyleProfile,
+    );
+    const conversationStyle =
+      selectAiConversationStyle(temporaryName);
     room.aiDelayTimer = this.setTimer(async () => {
       if (room.status !== "active" || controller.signal.aborted) {
         return;
@@ -1195,7 +1209,7 @@ export class GameService {
         });
         this.send(participant.session, {
           type: "chat.typing_start",
-          status: "正在组织语言…",
+          status: conversationStyle.typingStatus,
         });
       }
       const reservationId = randomUUID();
@@ -1232,7 +1246,8 @@ export class GameService {
         const rawReply = await this.aiReply({
           messages: room.messages,
           signal: controller.signal,
-          temporaryName: room.aiTemporaryName ?? "晚风",
+          temporaryName,
+          styleProfile: this.aiStyleProfile,
         });
         const receivedAt = this.now();
         if (room.status !== "active" || controller.signal.aborted) {
@@ -1333,7 +1348,7 @@ export class GameService {
           }
         }
       }
-    }, 500 + Math.floor(this.random() * 1_000));
+    }, replyDelay);
   }
 
   private cancelAi(room: Room): void {

@@ -4,11 +4,13 @@ import { describe, it } from "node:test";
 import type { WebSocket } from "ws";
 import type { GameRepository } from "../src/db/repositories/game-repository.js";
 import {
+  AI_REPLY_DELAY_MAX_MS,
   AI_USAGE_ESTIMATED_TOKENS,
   ENTRY_GATE_MS,
   GUESS_UNLOCK_MS,
   GameService,
   MATCH_SEARCH_MIN_MS,
+  ROOM_DURATION_MS,
   TYPING_EXPIRY_MS,
   type GameServiceOptions,
 } from "../src/game.js";
@@ -19,6 +21,7 @@ import type {
   AiSettleResult,
   AiUsageReservation,
 } from "../src/ai/usage-budget.js";
+import { AiBudgetController } from "../src/matchmaking/ai-budget.js";
 import type { Session } from "../src/types.js";
 
 class FakeSocket extends EventEmitter {
@@ -275,6 +278,35 @@ describe("匹配与结算规则", () => {
         ?.opponentLabel,
       "玩家b",
     );
+    const found = b.socket.sent.find(
+      (event) => event.type === "match.found",
+    );
+    assert.equal(
+      Number(found?.endsAt) - Number(found?.startedAt),
+      10 * 60_000,
+    );
+  });
+
+  it("生产匹配路径在没有真人候选时不因空历史配额无限等待", async () => {
+    const { service, clock } = harness({
+      aiBudget: new AiBudgetController(),
+    });
+    const player = session("solo-production-path");
+    service.joinQueue(player.session);
+
+    clock.advance(MATCH_SEARCH_MIN_MS);
+    await flushAsync();
+    clock.advance(ENTRY_GATE_MS);
+
+    assert.equal(
+      player.socket.sent.some((event) => event.type === "match.found"),
+      true,
+    );
+    assert.ok(player.session.roomId);
+    assert.equal(
+      service.rooms.get(player.session.roomId)?.opponentType,
+      "ai",
+    );
   });
 
   it("容量满时按位置排队，房间结算后自动提升，队列满则拒绝", () => {
@@ -307,6 +339,7 @@ describe("匹配与结算规则", () => {
     clock.advance(GUESS_UNLOCK_MS);
     service.submitGuess(a.session, "human");
     service.submitGuess(b.session, "human");
+    clock.advance(ROOM_DURATION_MS - GUESS_UNLOCK_MS);
 
     assert.equal(
       c.socket.sent.some((event) => event.type === "match.searching"),
@@ -353,23 +386,33 @@ describe("匹配与结算规则", () => {
     );
   });
 
-  it("AI 局锁定判断后取消 AI 回复并立即结算", () => {
+  it("AI 局锁定判断后仍可发言，并在十分钟结束时结算", () => {
     const { service, clock } = harness();
     const player = session("a");
     service.joinQueue(player.session);
     finishMatch(clock);
     clock.advance(GUESS_UNLOCK_MS);
-    service.sendChat(player.session, "你是谁？");
     service.submitGuess(player.session, "ai");
 
     const room = service.rooms.get(player.session.roomId ?? "");
+    assert.equal(room?.status, "active");
+    const message = service.sendChat(
+      player.session,
+      "判断锁定以后我还想再问一句",
+    );
+    assert.equal(message.text, "判断锁定以后我还想再问一句");
+    assert.equal(
+      player.socket.sent.some((event) => event.type === "game.finished"),
+      false,
+    );
+
+    clock.advance(ROOM_DURATION_MS - GUESS_UNLOCK_MS);
     assert.equal(room?.status, "settled");
-    assert.equal(room?.aiAbort, undefined);
-    const settled = player.socket.sent.find(
+    const finished = player.socket.sent.find(
       (event) => event.type === "game.finished",
     );
-    assert.equal(settled?.opponentType, "ai");
-    assert.equal(settled?.isCorrect, true);
+    assert.equal(finished?.opponentType, "ai");
+    assert.equal(finished?.isCorrect, true);
   });
 
   it("AI 回复使用玩家在房间中看到的同一个本局临时名称", async () => {
@@ -388,14 +431,14 @@ describe("匹配与结算规则", () => {
     )?.opponentLabel;
 
     service.sendChat(player.session, "你叫什么？");
-    clock.advance(500);
+    clock.advance(AI_REPLY_DELAY_MAX_MS);
     await flushAsync();
 
     assert.equal(visibleName, "晚风");
     assert.equal(promptTemporaryName, visibleName);
   });
 
-  it("真人局等待双方判断，且不广播 opponent.guessed", () => {
+  it("真人局双方判断后仍可发言，十分钟结束前不揭晓身份", () => {
     const { service, clock } = harness();
     const a = session("a");
     const b = session("b");
@@ -407,17 +450,26 @@ describe("匹配与结算规则", () => {
     service.submitGuess(a.session, "human");
     const room = service.rooms.get(a.session.roomId ?? "");
     assert.equal(room?.status, "active");
+    assert.doesNotThrow(() =>
+      service.sendChat(a.session, "我已经判断了，但还可以继续聊。"),
+    );
     assert.equal(
       b.socket.sent.some((event) => event.type === "opponent.guessed"),
       false,
     );
 
     service.submitGuess(b.session, "human");
-    assert.equal(room?.status, "settled");
+    assert.equal(room?.status, "active");
+    assert.doesNotThrow(() =>
+      service.sendChat(b.session, "我也判断了，最后再回应一句。"),
+    );
     assert.equal(
       a.socket.sent.some((event) => event.type === "game.finished"),
-      true,
+      false,
     );
+
+    clock.advance(ROOM_DURATION_MS - GUESS_UNLOCK_MS);
+    assert.equal(room?.status, "settled");
     assert.equal(
       b.socket.sent.some((event) => event.type === "game.finished"),
       true,
@@ -466,7 +518,7 @@ describe("匹配与结算规则", () => {
     finishMatch(clock);
 
     service.sendChat(player.session, "你好");
-    clock.advance(500);
+    clock.advance(AI_REPLY_DELAY_MAX_MS);
     await flushAsync();
     await flushAsync();
 
@@ -509,7 +561,7 @@ describe("匹配与结算规则", () => {
     finishMatch(clock);
 
     service.sendChat(player.session, "你好");
-    clock.advance(500);
+    clock.advance(AI_REPLY_DELAY_MAX_MS);
     await flushAsync();
 
     assert.equal(budget.reserves.length, 1);
@@ -536,7 +588,7 @@ describe("匹配与结算规则", () => {
     failedHarness.service.joinQueue(failedPlayer.session);
     finishMatch(failedHarness.clock);
     failedHarness.service.sendChat(failedPlayer.session, "失败路径");
-    failedHarness.clock.advance(500);
+    failedHarness.clock.advance(AI_REPLY_DELAY_MAX_MS);
     await flushAsync();
     await flushAsync();
 
@@ -564,12 +616,17 @@ describe("匹配与结算规则", () => {
     cancelledHarness.service.joinQueue(cancelledPlayer.session);
     finishMatch(cancelledHarness.clock);
     cancelledHarness.service.sendChat(cancelledPlayer.session, "取消路径");
-    cancelledHarness.clock.advance(500);
+    cancelledHarness.clock.advance(AI_REPLY_DELAY_MAX_MS);
     await flushAsync();
     assert.equal(aiStarted, true);
 
-    cancelledHarness.clock.advance(GUESS_UNLOCK_MS - 500);
+    cancelledHarness.clock.advance(
+      GUESS_UNLOCK_MS - AI_REPLY_DELAY_MAX_MS,
+    );
     cancelledHarness.service.submitGuess(cancelledPlayer.session, "ai");
+    cancelledHarness.clock.advance(
+      ROOM_DURATION_MS - GUESS_UNLOCK_MS,
+    );
     await flushAsync();
     await flushAsync();
 
@@ -618,6 +675,7 @@ describe("匹配与结算规则", () => {
     clock.advance(GUESS_UNLOCK_MS);
     service.submitGuess(a.session, "human");
     service.submitGuess(b.session, "human");
+    clock.advance(ROOM_DURATION_MS - GUESS_UNLOCK_MS);
     for (let index = 0; index < 8; index += 1) await flushAsync();
 
     assert.equal(settledGames.length, 1);
@@ -676,6 +734,7 @@ describe("匹配与结算规则", () => {
     clock.advance(GUESS_UNLOCK_MS);
     service.submitGuess(a.session, "human");
     service.submitGuess(b.session, "human");
+    clock.advance(ROOM_DURATION_MS - GUESS_UNLOCK_MS);
     for (let index = 0; index < 8; index += 1) await flushAsync();
 
     assert.deepEqual(archiveEligibility, [false]);

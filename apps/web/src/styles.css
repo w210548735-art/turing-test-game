@@ -1574,6 +1574,34 @@ button:disabled {
   -webkit-overflow-scrolling: touch;
 }
 
+.game-ending-warning {
+  position: sticky;
+  z-index: 4;
+  top: 0;
+  display: flex;
+  gap: 10px 20px;
+  align-items: center;
+  justify-content: space-between;
+  margin: -22px 0 28px;
+  padding: 12px 14px;
+  border-left: 7px solid var(--accent);
+  color: var(--paper-bright);
+  background: var(--ink);
+  box-shadow: 4px 4px 0 rgb(184 255 40 / 38%);
+}
+
+.game-ending-warning strong {
+  flex: 0 0 auto;
+  font-size: 0.76rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.game-ending-warning span {
+  font-size: 0.66rem;
+  line-height: 1.45;
+  text-align: right;
+}
+
 .message-list::-webkit-scrollbar {
   width: 8px;
 }
@@ -4206,6 +4234,15 @@ button:disabled {
     padding-right: var(--gutter);
     padding-bottom: 18px;
     padding-left: var(--gutter);
+  }
+
+  .game-ending-warning {
+    align-items: flex-start;
+    margin: 0 0 16px;
+  }
+
+  .game-ending-warning span {
+    max-width: 62%;
   }
 
   .message {

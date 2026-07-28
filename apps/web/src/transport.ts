@@ -560,6 +560,8 @@ export class DemoTransport implements GameTransport {
   private replyIndex = 0;
   private opponentType: Identity = Math.random() < 0.25 ? "ai" : "human";
   private opponentTemporaryName = "匿名玩家 / 07";
+  private playerGuess: Identity | null = null;
+  private matchStartedAt = 0;
 
   constructor(private readonly callbacks: TransportCallbacks) {}
 
@@ -586,27 +588,11 @@ export class DemoTransport implements GameTransport {
         this.simulateReply();
         break;
       case "guess.submit":
+        this.playerGuess = event.targetGuess;
         this.callbacks.onEvent({
           type: "guess.accepted",
           targetGuess: event.targetGuess,
         });
-        this.later(() => {
-          const isCorrect = event.targetGuess === this.opponentType;
-          this.callbacks.onEvent({
-            type: "game.finished",
-            opponentType: this.opponentType,
-            guess: event.targetGuess,
-            isCorrect,
-            outcome: isCorrect ? "won" : "lost",
-            archiveConsentEligible: false,
-            stats: {
-              durationSeconds: 20,
-              messageCount: this.sequence,
-              streak: isCorrect ? 1 : 0,
-              scoreDelta: isCorrect ? 12 : 0,
-            },
-          });
-        }, 850);
         break;
       case "game.report":
         this.later(
@@ -635,6 +621,8 @@ export class DemoTransport implements GameTransport {
     this.clearTimers();
     this.sequence = 0;
     this.replyIndex = 0;
+    this.playerGuess = null;
+    this.matchStartedAt = 0;
     this.opponentType = Math.random() < 0.25 ? "ai" : "human";
     this.opponentTemporaryName =
       this.opponentType === "ai"
@@ -665,15 +653,39 @@ export class DemoTransport implements GameTransport {
 
     this.later(() => {
       const startedAt = Date.now();
+      this.matchStartedAt = startedAt;
       this.callbacks.onEvent({
         type: "match.found",
         gameId: `demo-${startedAt}`,
         startedAt,
-        endsAt: startedAt + 5 * 60_000,
+        endsAt: startedAt + 10 * 60_000,
         minGuessAt: startedAt + 20_000,
         opponentLabel: this.opponentTemporaryName,
       });
+      this.later(() => this.finishMatch(), 10 * 60_000);
     }, 10_000);
+  }
+
+  private finishMatch(): void {
+    const isCorrect = this.playerGuess === this.opponentType;
+    this.callbacks.onEvent({
+      type: "game.finished",
+      opponentType: this.opponentType,
+      guess: this.playerGuess,
+      isCorrect,
+      outcome:
+        this.playerGuess === null ? "draw" : isCorrect ? "won" : "lost",
+      archiveConsentEligible: false,
+      stats: {
+        durationSeconds: Math.max(
+          0,
+          Math.round((Date.now() - this.matchStartedAt) / 1_000),
+        ),
+        messageCount: this.sequence,
+        streak: isCorrect ? 1 : 0,
+        scoreDelta: isCorrect ? 12 : 0,
+      },
+    });
   }
 
   private receiveOwnMessage(content: string, id: string): void {

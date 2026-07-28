@@ -31,6 +31,10 @@ import { aiRuntimeController } from "./ai/runtime-controller.js";
 import { AiUsageBudgetService } from "./ai/usage-budget.js";
 import { resolveDeepSeekKey } from "./ai.js";
 import {
+  DEFAULT_HUMAN_STYLE_PROFILE,
+  loadHumanEchoStyleProfile,
+} from "./ai/human-style-profile.js";
+import {
   Argon2idPasswordHasher,
   AuthError,
   AuthService,
@@ -337,6 +341,14 @@ export async function buildServer(
     namespace: "demo-ai-usage",
   });
   const database = createDatabase();
+  const aiStyleProfile = database.available
+    ? await loadHumanEchoStyleProfile(database.db).catch(() => {
+        app.log.warn(
+          "human echo style profile unavailable; using privacy-safe defaults",
+        );
+        return DEFAULT_HUMAN_STYLE_PROFILE;
+      })
+    : DEFAULT_HUMAN_STYLE_PROFILE;
   const authRepository =
     options.authRepository ??
     (database.available
@@ -500,6 +512,7 @@ export async function buildServer(
   const games = new GameService({
     aiBudget,
     aiUsageBudget,
+    aiStyleProfile,
     roomStore,
     gameRepository,
     reportRepository: databaseReportRepository,

@@ -18,6 +18,17 @@ describe("AI 配额与真人优先匹配", () => {
     assert.equal(blocked.reason, "recent_10_limit");
   });
 
+  it("低流量且没有真人候选时允许 AI 延迟兜底", async () => {
+    const controller = new AiBudgetController();
+    const allowed = await controller.reserveAiGame({
+      allowLatencyOverride: true,
+    });
+
+    assert.equal(allowed.allowed, true);
+    assert.equal(allowed.reason, "latency_override");
+    assert.equal(allowed.stats.recent10AiGames, 1);
+  });
+
   it("最近十局最多创建三局 AI", async () => {
     const controller = new AiBudgetController();
     for (let index = 0; index < 7; index += 1) {
@@ -80,6 +91,27 @@ describe("AI 配额与真人优先匹配", () => {
       assert.equal(assignments[0].reason, "human_pending");
     }
     assert.equal((await service.listWaiting()).length, 2);
+  });
+
+  it("只有一名玩家时在首轮五秒结束后直接分配 AI", async () => {
+    let now = 30_000;
+    const service = new AdmissionService({ now: () => now });
+    const ticket = await service.joinAdmission({
+      userId: "solo",
+      sessionId: "session-solo",
+    });
+
+    now += 5_000;
+    const assignments = await service.finalizeAdmission(ticket.bucketId);
+
+    assert.deepEqual(assignments, [
+      {
+        kind: "ai",
+        playerIds: ["solo"],
+        matchedAt: now,
+        bucketId: ticket.bucketId,
+      },
+    ]);
   });
 });
 

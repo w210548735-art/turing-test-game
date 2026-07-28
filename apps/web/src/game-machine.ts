@@ -206,7 +206,7 @@ export function gameReducer(
       return {
         ...state,
         guessSubmitted: action.guess,
-        notice: "判断已锁定，等待本局结算。",
+        notice: "判断已锁定，但对话仍然开放；身份将在本局结束后揭晓。",
       };
     case "GAME_FINISHED":
       return {

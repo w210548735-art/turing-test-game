@@ -38,7 +38,7 @@ describe("gameReducer", () => {
       type: "MATCH_FOUND",
       gameId: "g-1",
       startedAt: 7_000,
-      endsAt: 307_000,
+      endsAt: 607_000,
       minGuessAt: 27_000,
       opponentLabel: "匿名玩家",
     });

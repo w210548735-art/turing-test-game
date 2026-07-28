@@ -860,7 +860,7 @@ export default function App() {
   function submitMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const content = messageDraft.trim();
-    if (!content || state.guessSubmitted) {
+    if (!content) {
       return;
     }
     sendSafely({
@@ -1800,7 +1800,7 @@ export function Onboarding({
             onClick={onDemo}
           >
             <span>{tutorialMode ? "开始教学对局" : "教学模式"}</span>
-            <small>无需账户 · 分步引导 · 约 5 分钟</small>
+            <small>无需账户 · 分步引导 · 最长 10 分钟</small>
           </button>
         </div>
 
@@ -2192,7 +2192,7 @@ export function ChatRoom({
             <span className="presence-mark" />
             <strong>{opponentLabel}</strong>
           </div>
-          <p>身份将在判断后揭晓</p>
+          <p>身份将在对局结束后揭晓</p>
         </header>
 
         <div
@@ -2202,6 +2202,16 @@ export function ChatRoom({
           aria-live="polite"
           aria-label="对话消息，可上下滚动"
         >
+          {gameRemaining > 0 && gameRemaining <= 30_000 && (
+            <div className="game-ending-warning" role="status">
+              <strong>{formatClock(gameRemaining)} 后结束</strong>
+              <span>
+                {guessSubmitted
+                  ? "判断已锁定，但对话仍然开放。"
+                  : "还没有提交判断，请在倒计时结束前完成。"}
+              </span>
+            </div>
+          )}
           {messages.length === 0 && (
             <div className="conversation-empty">
               <span className="empty-index">NO SIGNAL / START WITH A QUESTION</span>
@@ -2278,7 +2288,7 @@ export function ChatRoom({
               {tutorialMode && !guessSubmitted
                 ? "教学 05 · 写好后点发送 ↘"
                 : guessSubmitted
-                  ? "CONVERSATION LOCKED"
+                  ? "VERDICT LOCKED · CHAT OPEN"
                   : "ENCRYPTED CHANNEL"}
             </span>
           </div>
@@ -2287,9 +2297,10 @@ export function ChatRoom({
             value={messageDraft}
             maxLength={100}
             rows={2}
-            disabled={Boolean(guessSubmitted)}
             placeholder={
-              guessSubmitted ? "判断已提交，对话已冻结。" : "输入一个问题…"
+              guessSubmitted
+                ? "判断已经锁定，还可以继续对话…"
+                : "输入一个问题…"
             }
             onChange={(event) => onMessageChange(event.target.value)}
             onBlur={onMessageBlur}
@@ -2299,7 +2310,7 @@ export function ChatRoom({
             <span>{messageDraft.length}/100 · ENTER 发送 / SHIFT+ENTER 换行</span>
             <button
               type="submit"
-              disabled={!messageDraft.trim() || Boolean(guessSubmitted)}
+              disabled={!messageDraft.trim()}
               aria-label="发送消息"
             >
               发送 <span aria-hidden="true">↗</span>
@@ -3059,7 +3070,7 @@ export function CreatorDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
-function FeedbackDialog({
+export function FeedbackDialog({
   canSubmit,
   busy,
   error,
@@ -3127,7 +3138,7 @@ function FeedbackDialog({
             <p>
               Bug、奇怪体验和灵光一闪都可以写。请不要填写密码、验证码或其他隐私信息喵。
             </p>
-            <fieldset disabled={busy || !canSubmit}>
+            <fieldset disabled={busy}>
               <legend>反馈类型</legend>
               <div className="feedback-category">
                 {([
@@ -3177,7 +3188,7 @@ function FeedbackDialog({
             </fieldset>
             {!canSubmit && (
               <p className="feedback-login-note" role="note">
-                当前是教学模式身份。登录账户后，反馈才可以安全送到作者邮箱喵。
+                当前是教学模式身份，可以先写完；提交时登录账户，就能安全送到作者邮箱喵。
               </p>
             )}
             {error && (
@@ -3190,7 +3201,6 @@ function FeedbackDialog({
               type="submit"
               disabled={
                 busy ||
-                !canSubmit ||
                 title.trim().length < 2 ||
                 details.trim().length < 10
               }

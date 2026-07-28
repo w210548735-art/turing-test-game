@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ChatRoom,
   CreatorDialog,
+  FeedbackDialog,
   Onboarding,
   ResultScreen,
 } from "./App";
@@ -73,6 +74,41 @@ describe("教学模式引导", () => {
     expect(markup).toContain("答案重要，迟疑也重要");
   });
 
+  it("判断锁定后仍开放输入，并在最后三十秒持续提醒", () => {
+    const markup = renderToStaticMarkup(
+      <ChatRoom
+        nickname="迟疑的人"
+        opponentLabel="纸飞机"
+        openingQuestions={[]}
+        thinkingStatus="正在组织语言…"
+        messages={[]}
+        opponentTyping={false}
+        opponentTypingStatus=""
+        messageDraft="最后再问一句"
+        gameRemaining={25_000}
+        guessRemaining={0}
+        guessReady={false}
+        guessSubmitted="ai"
+        reportConfirmed={false}
+        tutorialMode={false}
+        messagesEndRef={{ current: null }}
+        onMessageChange={noop}
+        onMessageSubmit={noop}
+        onMessageBlur={noop}
+        onMessageKeyDown={noop}
+        onGuess={noop}
+        onReport={noop}
+        onLeave={noop}
+      />,
+    );
+
+    const composer = markup.match(/<textarea id="message"[^>]*>/u)?.[0];
+    expect(composer).toBeTruthy();
+    expect(composer).not.toContain("disabled");
+    expect(markup).toContain("00:25 后结束");
+    expect(markup).toContain("判断已锁定，但对话仍然开放");
+  });
+
   it("在结算页明确提示教学完成", () => {
     const markup = renderToStaticMarkup(
       <ResultScreen
@@ -109,5 +145,26 @@ describe("关注作者弹窗", () => {
       'href="https://github.com/w210548735-art/turing-test-game"',
     );
     expect(markup).toContain("FOLLOW THE CREATOR / 04");
+  });
+});
+
+describe("问题反馈弹窗", () => {
+  it("教学或未登录状态也允许先填写完整反馈", () => {
+    const markup = renderToStaticMarkup(
+      <FeedbackDialog
+        canSubmit={false}
+        busy={false}
+        error={null}
+        message={null}
+        onClose={noop}
+        onSubmit={async () => undefined}
+      />,
+    );
+
+    const fieldset = markup.match(/<fieldset[^>]*>/u)?.[0];
+    expect(fieldset).toBeTruthy();
+    expect(fieldset).not.toContain("disabled");
+    expect(markup).toContain("发生了什么、你原本期待什么");
+    expect(markup).toContain("可以先写完");
   });
 });

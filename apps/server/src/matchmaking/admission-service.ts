@@ -209,7 +209,9 @@ export class AdmissionService {
         return assignments;
       }
 
-      const decision = await this.aiBudget.reserveAiGame();
+      const decision = await this.aiBudget.reserveAiGame({
+        allowLatencyOverride: true,
+      });
       if (!decision.allowed) {
         assignments.push({
           kind: "waiting",

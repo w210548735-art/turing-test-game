@@ -20,8 +20,20 @@ export interface AiBudgetStats {
 
 export interface AiBudgetDecision {
   allowed: boolean;
-  reason: "within_budget" | "recent_10_limit" | "recent_100_limit";
+  reason:
+    | "within_budget"
+    | "latency_override"
+    | "recent_10_limit"
+    | "recent_100_limit";
   stats: AiBudgetStats;
+}
+
+export interface AiReserveOptions {
+  /**
+   * 仅在真人候选已确认不存在时使用。
+   * 允许低流量兜底突破滚动比例，但不绕过模型用量与安全预算。
+   */
+  allowLatencyOverride?: boolean;
 }
 
 export interface AiBudgetControllerOptions {
@@ -50,14 +62,18 @@ local games10, ai10 = candidate_window(10)
 local games100, ai100 = candidate_window(100)
 local allowed10 = ai10 <= 3 and ai10 <= math.floor(games10 * 0.30)
 local allowed100 = ai100 <= 30 and ai100 <= math.floor(games100 * 0.30)
+local latency_override = ARGV[1] == "1"
 
-if not allowed10 or not allowed100 then
-  return {0, games10, ai10, games100, ai100}
+if (not allowed10 or not allowed100) and not latency_override then
+  return {0, games10, ai10, games100, ai100, 0}
 end
 
 redis.call("RPUSH", KEYS[1], "ai")
 redis.call("LTRIM", KEYS[1], -100, -1)
-return {1, games10, ai10, games100, ai100}
+if allowed10 and allowed100 then
+  return {1, games10, ai10, games100, ai100, 0}
+end
+return {1, games10, ai10, games100, ai100, 1}
 `;
 
 const RECORD_HUMAN_SCRIPT = `
@@ -100,22 +116,28 @@ export class AiBudgetController {
     return this.getStats();
   }
 
-  async reserveAiGame(): Promise<AiBudgetDecision> {
+  async reserveAiGame(
+    options: AiReserveOptions = {},
+  ): Promise<AiBudgetDecision> {
+    const allowLatencyOverride = options.allowLatencyOverride === true;
     if (this.runtime.client) {
       const result = await this.runtime.client.eval(
         RESERVE_AI_SCRIPT,
         [this.keys.aiHistory()],
-        [],
+        [allowLatencyOverride ? "1" : "0"],
       );
-      if (!Array.isArray(result) || result.length < 5) {
+      if (!Array.isArray(result) || result.length < 6) {
         throw new Error("Redis 返回了无效的 AI 配额结果。");
       }
       const allowed = Number(result[0]) === 1;
+      const latencyOverrideUsed = Number(result[5]) === 1;
       const stats = await this.getStats();
       return {
         allowed,
-        reason: allowed
-          ? "within_budget"
+        reason: latencyOverrideUsed
+          ? "latency_override"
+          : allowed
+            ? "within_budget"
           : this.decisionReason(
               Number(result[1]),
               Number(result[2]),
@@ -137,13 +159,17 @@ export class AiBudgetController {
     const allowed100 =
       recent100Ai <= 30 &&
       recent100Ai <= Math.floor(recent100.length * AI_RATIO_HARD_LIMIT);
-    if (allowed10 && allowed100) {
+    const latencyOverrideUsed =
+      allowLatencyOverride && (!allowed10 || !allowed100);
+    if ((allowed10 && allowed100) || latencyOverrideUsed) {
       this.pushMemory("ai");
     }
     return {
-      allowed: allowed10 && allowed100,
+      allowed: (allowed10 && allowed100) || latencyOverrideUsed,
       reason:
-        allowed10 && allowed100
+        latencyOverrideUsed
+          ? "latency_override"
+          : allowed10 && allowed100
           ? "within_budget"
           : this.decisionReason(
               recent10.length,
